@@ -62,7 +62,7 @@ def transcribe_audio(
         model_size: Whisper model size (tiny, base, small, medium, large-v3)
         device: Device to use (cpu, cuda, auto)
         language: Language code (None for auto-detect)
-        output_format: Output format (txt, json, srt, vtt)
+        output_format: Output format (txt, json, srt, vtt, md)
 
     Returns:
         dict with transcription results
@@ -77,6 +77,7 @@ def transcribe_audio(
     # int8_float16 uses ~half the VRAM of float16 with negligible quality loss.
     # Fall back to int8 on CPU if CUDA is not available.
     compute_type = "int8_float16" if device == "cuda" else "int8"
+    require_gpu = os.environ.get("REQUIRE_GPU") == "1"
 
     def _load_model(dev, ctype):
         print(f"Loading Whisper model: {model_size} on {dev} ({ctype})", file=sys.stderr)
@@ -101,6 +102,11 @@ def transcribe_audio(
         model = _load_model(device, compute_type)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "CUDA" in str(e):
+            if require_gpu:
+                raise RuntimeError(
+                    "GPU transcription is required but CUDA is unavailable. "
+                    "Do not continue on CPU. Fix the NVIDIA driver and retry."
+                ) from e
             print("GPU OOM during model load, falling back to CPU", file=sys.stderr)
             device = "cpu"
             model = _load_model("cpu", "int8")
@@ -112,6 +118,11 @@ def transcribe_audio(
         info, all_segments = _run_transcription(model)
     except RuntimeError as e:
         if "out of memory" in str(e).lower() or "CUDA" in str(e):
+            if require_gpu:
+                raise RuntimeError(
+                    "GPU transcription is required but CUDA failed during processing. "
+                    "Do not continue on CPU."
+                ) from e
             print("GPU OOM during transcription, falling back to CPU", file=sys.stderr)
             del model
             model = _load_model("cpu", "int8")
@@ -139,7 +150,7 @@ def save_transcription(result: dict, output_file: str, format: str):
     """Save transcription in specified format"""
     output_path = Path(output_file)
 
-    if format == "txt":
+    if format in ("txt", "md"):
         output_path.write_text(result["text"])
 
     elif format == "json":
@@ -177,7 +188,7 @@ def main():
     parser.add_argument("-l", "--language", default=None,
                        help="Language code (default: auto-detect)")
     parser.add_argument("-f", "--format", default="txt",
-                       choices=["txt", "json", "srt", "vtt"],
+                       choices=["txt", "json", "srt", "vtt", "md"],
                        help="Output format (default: txt)")
     parser.add_argument("-o", "--output",
                        help="Output file (default: audio_file.txt)")

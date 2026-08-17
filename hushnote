@@ -212,7 +212,7 @@ transcribe_meeting() {
 
     local model="$WHISPER_MODEL"
     local language="$WHISPER_LANGUAGE"
-    local format="txt"
+    local format="${HUSHNOTE_TRANSCRIBE_FORMAT:-txt}"
     local output=""
 
     while [[ $# -gt 0 ]]; do
@@ -330,7 +330,7 @@ full_workflow() {
     local whisper_model="$WHISPER_MODEL"
     local whisper_language="$WHISPER_LANGUAGE"
     local ollama_model="$OLLAMA_MODEL"
-    local format=""
+    local format="${HUSHNOTE_TRANSCRIBE_FORMAT:-txt}"
     local enable_diarization=false
     local num_speakers=""
     local enable_compression=true
@@ -529,7 +529,7 @@ full_workflow() {
 
         # Step 6: Apply labels to create final transcript
         log_info "Step 6: Creating final transcript with speaker names..."
-        local transcription_file=$(apply_speaker_labels "$labeled_file" -f txt)
+        local transcription_file=$(apply_speaker_labels "$labeled_file" -f "${format:-txt}")
 
         if [ -z "$transcription_file" ] || [ ! -f "$transcription_file" ]; then
             log_error "Apply labels failed"
@@ -625,6 +625,7 @@ full_workflow() {
         local transcribe_args=()
         [ -n "$whisper_model" ] && transcribe_args+=(-m "$whisper_model")
         [ -n "$whisper_language" ] && transcribe_args+=(-l "$whisper_language")
+        [ -n "${format:-}" ] && transcribe_args+=(-f "${format:-txt}")
         transcription_file=$(transcribe_meeting "$transcribe_source" "${transcribe_args[@]}")
 
         log_debug "Transcription file captured: [$transcription_file]"
@@ -758,7 +759,7 @@ apply_speaker_labels() {
     local labeled_file="$1"
     shift
 
-    local format="txt"
+    local format="${HUSHNOTE_TRANSCRIBE_FORMAT:-txt}"
     local output=""
 
     while [[ $# -gt 0 ]]; do
@@ -1083,7 +1084,9 @@ list_recordings() {
             echo "   Size: $size | Date: $timestamp"
 
             # Check for associated files
-            [ -f "${base}.txt" ] && echo "   ✓ Transcription available"
+            if [ -f "${base}.txt" ] || [ -f "${base}.md" ]; then
+                echo "   ✓ Transcription available"
+            fi
             [ -f "${base}_speakers.json" ] && echo "   ✓ Diarization available"
             [ -f "${base}_summary.md" ] && echo "   ✓ Summary available"
             echo ""
@@ -1274,15 +1277,16 @@ status_recordings() {
             local metadata_file="${base}_metadata.json"
             local hook_done_file="${base}.hook_done"
 
-            local has_wav=false has_mp3=false has_txt=false has_summary=false has_hook_done=false
+            local has_wav=false has_mp3=false has_txt=false has_md=false has_summary=false has_hook_done=false
             [ -f "$wav_file" ]       && has_wav=true
             [ -f "$mp3_file" ]       && has_mp3=true
             [ -f "$txt_file" ]       && has_txt=true
+            [ -f "${base}.md" ]      && has_md=true
             [ -f "$summary_file" ]   && has_summary=true
             [ -f "$hook_done_file" ] && has_hook_done=true
 
-            # Skip dirs with no recognisable audio at all and no txt either
-            if ! $has_wav && ! $has_mp3 && ! $has_txt; then
+            # Skip dirs with no recognisable audio at all and no transcript
+            if ! $has_wav && ! $has_mp3 && ! $has_txt && ! $has_md; then
                 continue
             fi
 
@@ -1302,7 +1306,7 @@ status_recordings() {
                 fi
                 status_color="$GREEN"
                 done_local=$((done_local + 1))
-            elif $has_txt; then
+            elif $has_txt || $has_md; then
                 status_text="transcribed, no summary"
                 status_color="$YELLOW"
                 partial=$((partial + 1))
@@ -1449,6 +1453,7 @@ main() {
                 echo ""
                 echo "Options:"
                 echo "  -m, --model MODEL     Whisper model (tiny|base|small|medium|large-v3)"
+                echo "  -f, --format FMT      Output format for transcript (txt, json, srt, vtt, md)"
                 echo "  -o, --ollama MODEL    Ollama model for summarization"
                 echo "  -s, --speakers NUM    Number of speakers (requires --diarize)"
                 echo "  --diarize             Enable speaker diarization"
@@ -1481,6 +1486,7 @@ main() {
             local keep_wav=false
             local clean_all=false
             local process_timeout="$PROCESS_TIMEOUT"
+            local transcription_format="${HUSHNOTE_TRANSCRIBE_FORMAT:-txt}"
             local enable_trim=true
             local keep_untrimmed=false
             local keep_trimmed=true
@@ -1489,6 +1495,10 @@ main() {
                 case $1 in
                     -m|--model)
                         whisper_model="$2"
+                        shift 2
+                        ;;
+                    -f|--format)
+                        transcription_format="$2"
                         shift 2
                         ;;
                     -l|--language)
@@ -1618,7 +1628,7 @@ main() {
 
                 # Step 5: Apply labels
                 log_info "Step 5: Creating final transcript with speaker names..."
-                local transcription_file=$(apply_speaker_labels "$labeled_file" -f txt)
+                local transcription_file=$(apply_speaker_labels "$labeled_file" -f "${transcription_format:-txt}")
 
                 if [ -z "$transcription_file" ] || [ ! -f "$transcription_file" ]; then
                     log_error "Apply labels failed"
@@ -1709,7 +1719,7 @@ main() {
                 fi
 
                 # Step 3: Transcribe
-                local process_transcribe_args=(-m "$whisper_model")
+                local process_transcribe_args=(-m "$whisper_model" -f "${transcription_format:-txt}")
                 [ -n "$whisper_language" ] && process_transcribe_args+=(-l "$whisper_language")
                 local transcription_file
                 transcription_file=$(transcribe_meeting "$transcribe_source" "${process_transcribe_args[@]}")
