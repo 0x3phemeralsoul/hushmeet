@@ -1733,6 +1733,11 @@ main() {
                         summary_file=$(summarize_meeting "$transcription_file")
                     fi
 
+                    if [ -z "$summary_file" ] || [ ! -f "$summary_file" ]; then
+                        log_error "Summarization failed"
+                        exit 1
+                    fi
+
                     echo ""
 
                     # Cleanup audio

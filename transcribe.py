@@ -98,16 +98,26 @@ def transcribe_audio(
             })
         return info, result_segments
 
+    def _is_gpu_failure(error):
+        message = str(error).lower()
+        return (
+            "out of memory" in message
+            or "cuda" in message
+            or "cublas" in message
+            or "cudnn" in message
+            or "libcudart" in message
+        )
+
     try:
         model = _load_model(device, compute_type)
     except RuntimeError as e:
-        if "out of memory" in str(e).lower() or "CUDA" in str(e):
+        if device == "cuda" and _is_gpu_failure(e):
             if require_gpu:
                 raise RuntimeError(
                     "GPU transcription is required but CUDA is unavailable. "
                     "Do not continue on CPU. Fix the NVIDIA driver and retry."
                 ) from e
-            print("GPU OOM during model load, falling back to CPU", file=sys.stderr)
+            print("GPU unavailable during model load, falling back to CPU", file=sys.stderr)
             device = "cpu"
             model = _load_model("cpu", "int8")
         else:
@@ -117,13 +127,13 @@ def transcribe_audio(
     try:
         info, all_segments = _run_transcription(model)
     except RuntimeError as e:
-        if "out of memory" in str(e).lower() or "CUDA" in str(e):
+        if device == "cuda" and _is_gpu_failure(e):
             if require_gpu:
                 raise RuntimeError(
                     "GPU transcription is required but CUDA failed during processing. "
                     "Do not continue on CPU."
                 ) from e
-            print("GPU OOM during transcription, falling back to CPU", file=sys.stderr)
+            print("GPU unavailable during transcription, falling back to CPU", file=sys.stderr)
             del model
             model = _load_model("cpu", "int8")
             info, all_segments = _run_transcription(model)

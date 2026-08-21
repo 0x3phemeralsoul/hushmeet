@@ -7,7 +7,9 @@ Takes transcription text and generates meeting notes, summaries, and action item
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -74,6 +76,109 @@ def query_ollama(prompt: str, model: str = "llama3.1:8b", ollama_url: str = DEFA
         sys.exit(1)
 
 
+def query_openai(prompt: str, model: str) -> str:
+    """Generate a summary with the OpenAI Responses API without storing a key in this project."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Export it in the terminal before running HushNote."
+        )
+
+    max_retries = int(os.environ.get("OPENAI_MAX_RETRIES", "3"))
+    delay = float(os.environ.get("OPENAI_RETRY_INITIAL_SECONDS", "30"))
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": prompt,
+                    "reasoning": {"effort": os.environ.get("OPENAI_REASONING_EFFORT", "none")},
+                    "max_output_tokens": 1200,
+                },
+                timeout=300,
+            )
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Error querying OpenAI: {e}") from e
+        if response.status_code == 429:
+            error = _openai_error_details(response)
+            if error.get("code") == "insufficient_quota":
+                raise RuntimeError(_format_openai_error(response, error))
+            if attempt < max_retries:
+                retry_after = _retry_after_seconds(response) or delay
+                print(
+                    f"OpenAI rate limited; retrying in {retry_after:.0f}s "
+                    f"(attempt {attempt + 1}/{max_retries})",
+                    file=sys.stderr,
+                )
+                time.sleep(retry_after)
+                delay = min(delay * 2, 300)
+                continue
+            raise RuntimeError(_format_openai_error(response, error))
+        try:
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            error = _openai_error_details(response)
+            raise RuntimeError(_format_openai_error(response, error)) from e
+        body = response.json()
+        if body.get("output_text"):
+            return body["output_text"]
+
+        parts = []
+        for output in body.get("output", []):
+            for content in output.get("content", []):
+                if content.get("type") == "output_text":
+                    parts.append(content.get("text", ""))
+        if parts:
+            return "\n".join(parts)
+        raise RuntimeError("OpenAI returned no text output")
+    raise RuntimeError("OpenAI request failed after retries")
+
+
+def _openai_error_details(response: requests.Response) -> dict:
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        error = {"message": response.text[:500]}
+    return error
+
+
+def _format_openai_error(response: requests.Response, error: dict) -> str:
+    request_id = response.headers.get("x-request-id", "")
+    reset_tokens = response.headers.get("x-ratelimit-reset-tokens", "")
+    reset_requests = response.headers.get("x-ratelimit-reset-requests", "")
+    details = [
+        f"OpenAI API error {response.status_code}",
+        f"type={error.get('type', '')}",
+        f"code={error.get('code', '')}",
+        f"message={error.get('message', '')}",
+    ]
+    if request_id:
+        details.append(f"request_id={request_id}")
+    if reset_tokens:
+        details.append(f"reset_tokens={reset_tokens}")
+    if reset_requests:
+        details.append(f"reset_requests={reset_requests}")
+    return "; ".join(details)
+
+
+def _retry_after_seconds(response: requests.Response) -> float | None:
+    value = response.headers.get("retry-after")
+    if value:
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def load_transcription(file_path: str) -> str:
     """Load transcription from file (supports .txt, .json)"""
     path = Path(file_path)
@@ -94,14 +199,17 @@ def summarize_meeting(
     model: str,
     ollama_url: str,
 ) -> dict:
-    """Generate meeting notes from a transcription in a single Ollama call."""
-    print(f"Generating meeting summary using {model}...", file=sys.stderr)
+    """Generate meeting notes using the configured local or OpenAI text model."""
+    provider = os.environ.get("SUMMARY_PROVIDER", "ollama").lower()
+    print(f"Generating meeting summary using {provider}/{model}...", file=sys.stderr)
+    prompt = SUMMARY_PROMPT.format(transcription=transcription)
 
-    text = query_ollama(
-        SUMMARY_PROMPT.format(transcription=transcription),
-        model=model,
-        ollama_url=ollama_url,
-    )
+    if provider == "openai":
+        text = query_openai(prompt, model=model)
+    elif provider == "ollama":
+        text = query_ollama(prompt, model=model, ollama_url=ollama_url)
+    else:
+        raise RuntimeError(f"Unsupported SUMMARY_PROVIDER: {provider}")
 
     return {"summary": _strip_code_fence(text)}
 

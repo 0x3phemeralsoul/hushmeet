@@ -20,8 +20,7 @@ fi
 OUTPUT_DIR="${RECORDINGS_DIR:-./recordings}"
 DATE=$(date +%Y%m%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-MEETING_DIR="${OUTPUT_DIR}/${DATE}/meeting_${TIMESTAMP}"
-OUTPUT_FILE="${MEETING_DIR}/meeting_${TIMESTAMP}.wav"
+OUTPUT_FILE=""
 
 # Parse arguments
 DURATION=""
@@ -43,8 +42,8 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [-d DURATION] [-o OUTPUT_FILE] [-t TITLE]"
             echo "  -d, --duration    Recording duration (e.g., 3600 for 1 hour)"
-            echo "  -o, --output      Output file path (default: ./recordings/meeting_TIMESTAMP.wav)"
-            echo "  -t, --title       Meeting title"
+            echo "  -o, --output      Output file path (default: timestamp + title in RECORDINGS_DIR)"
+            echo "  -t, --title       Meeting title (included in the default folder and audio filename)"
             echo ""
             echo "Environment variables:"
             echo "  RECORDINGS_DIR    Directory for recordings (default: ./recordings)"
@@ -56,6 +55,23 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Keep the human-recognizable meeting title in the vault path while retaining
+# a timestamp for ordering and collision resistance. Custom --output paths are
+# left untouched.
+if [ -z "$OUTPUT_FILE" ]; then
+    TITLE_COMPONENT=$(printf '%s' "$TITLE" \
+        | tr '\n\r' '  ' \
+        | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s#[/\\:*?"<>|]#-#g' \
+        | cut -c1-100)
+    if [ -n "$TITLE_COMPONENT" ]; then
+        MEETING_BASENAME="${TITLE_COMPONENT} — ${TIMESTAMP}"
+    else
+        MEETING_BASENAME="Meeting — ${TIMESTAMP}"
+    fi
+    MEETING_DIR="${OUTPUT_DIR}/${DATE}/${MEETING_BASENAME}"
+    OUTPUT_FILE="${MEETING_DIR}/${MEETING_BASENAME}.wav"
+fi
 
 # Create output directory
 mkdir -p "$(dirname "$OUTPUT_FILE")"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ! "$1" =~ ^[a-p]{32}$ ]]; then
+  echo "Usage: hushmeet-install-meet-extension <Chrome extension ID>" >&2
+  exit 2
+fi
+
+manifest_dir="$HOME/.config/google-chrome/NativeMessagingHosts"
+mkdir -p "$manifest_dir"
+manifest_path="$manifest_dir/io.hushmeet.recorder.json"
+
+python3 - "$manifest_path" "$1" <<'PY'
+import json
+import sys
+
+path, extension_id = sys.argv[1:]
+manifest = {
+    "name": "io.hushmeet.recorder",
+    "description": "HushMeet Google Meet recorder confirmation bridge",
+    "path": "/home/ephy/dev/hushnote/scripts/hushmeet-native-host.py",
+    "type": "stdio",
+    "allowed_origins": [f"chrome-extension://{extension_id}/"],
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+PY
+chmod 600 "$manifest_path"
+echo "Installed native-messaging allowlist for extension $1"

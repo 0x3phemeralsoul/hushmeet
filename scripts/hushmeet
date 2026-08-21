@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="/home/ephy/dev/hushnote"
+MEETINGS_ROOT="/home/ephy/dev/Dewiz/Meetings"
+declare -A CATEGORY_DIRS=(
+  [sky]="$MEETINGS_ROOT/SKY"
+  [dsolver]="$MEETINGS_ROOT/dSolver"
+  [dewiz]="$MEETINGS_ROOT/Dewiz Command Room"
+  [board]="$MEETINGS_ROOT/Board Meetings"
+)
+
+usage() {
+  cat <<'EOF_USAGE'
+Usage:
+  hushmeet <sky|dsolver|dewiz|board> [options]
+  hushmeet stop
+  hushmeet <hushnote-command> [options]
+
+Examples:
+  hushmeet sky --title "Solver economics review"
+  hushmeet dsolver --title "V2 rollout" --duration 3600
+  hushmeet board --title "August board meeting"
+  hushmeet queue
+  hushmeet process-queue
+  hushmeet process-last
+  hushmeet transcribe path/to/audio.wav -m small
+  hushmeet summarize path/to/transcript.txt -o qwen2.5-coder:14b
+
+Notes:
+  - sky|dsolver|dewiz|board record now and enqueue processing for the nightly queue.
+  - Other commands are passed through to the hushnote CLI unchanged.
+  - stop sends the active watcher stop signal.
+  - process-last finds the most recent recording across all categories.
+EOF_USAGE
+}
+
+if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "$1" == "stop" ]]; then
+  exec "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-watcher.py" --stop
+fi
+
+if [[ "$1" == "sky" || "$1" == "dsolver" || "$1" == "dewiz" || "$1" == "board" ]]; then
+  export HUSHNOTE_CATEGORY="$1"
+  shift
+  export HUSHNOTE_TRANSCRIBE_FORMAT="md"
+  recording="$("$ROOT/hushnote" record "$@")"
+  "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-queue.py" enqueue "$recording" --category "$HUSHNOTE_CATEGORY"
+  echo "Queued for nightly processing: $recording"
+  exit 0
+fi
+
+command="$1"
+shift
+
+if [[ "$command" == "queue" ]]; then
+  exec "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-queue.py" list
+fi
+
+if [[ "$command" == "enqueue-missing" ]]; then
+  exec "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-queue.py" seed-missing
+fi
+
+if [[ "$command" == "process-queue" ]]; then
+  exec "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-queue.py" process "$@"
+fi
+
+find_latest_recording() {
+  local latest_mtime=0
+  local latest_file=""
+  local latest_category=""
+
+  for category in "${!CATEGORY_DIRS[@]}"; do
+    local category_dir="${CATEGORY_DIRS[$category]}"
+    [ -d "$category_dir" ] || continue
+
+    while IFS= read -r -d '' recording; do
+      local recording_time
+      recording_time=$(stat -c %Y "$recording" 2>/dev/null || echo 0)
+      if [ "$recording_time" -gt "$latest_mtime" ]; then
+        latest_mtime="$recording_time"
+        latest_file="$recording"
+        latest_category="$category"
+      fi
+    done < <(find "$category_dir" -type f -name '*.wav' -print0)
+  done
+
+  if [ -z "$latest_file" ]; then
+    return 1
+  fi
+
+  printf '%s\0%s' "$latest_category" "$latest_file"
+}
+
+if [[ "$command" == "process-last" ]]; then
+  latest="$(find_latest_recording)"
+  if [ -z "$latest" ]; then
+    echo "No recordings found for process-last."
+    exit 1
+  fi
+  IFS=$'\0' read -r latest_category latest_recording <<< "$latest"
+  command="process"
+  set -- "$latest_recording" "$@"
+  export HUSHNOTE_CATEGORY="$latest_category"
+fi
+
+export HUSHNOTE_CATEGORY="${HUSHNOTE_CATEGORY:-${HUSHMEET_DEFAULT_CATEGORY:-sky}}"
+exec "$ROOT/hushnote" "$command" "$@"
