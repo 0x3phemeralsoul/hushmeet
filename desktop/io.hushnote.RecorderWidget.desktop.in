@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hushnote Recorder Widget
+Comment=Start and monitor local Hushnote meeting recordings
+Exec=@HUSHNOTE_ROOT@/scripts/hushmeet-recorder-widget
+Icon=audio-input-microphone
+Terminal=false
+Categories=AudioVideo;
+StartupNotify=false

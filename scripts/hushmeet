@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/home/ephy/dev/hushnote"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MEETINGS_ROOT="/home/ephy/dev/Dewiz/Meetings"
 declare -A CATEGORY_DIRS=(
   [sky]="$MEETINGS_ROOT/SKY"
@@ -29,6 +29,8 @@ Examples:
 
 Notes:
   - sky|dsolver|dewiz|board record now and enqueue processing for the nightly queue.
+  - Recording commands accept --audio-source-type (microphone|monitor|both) and
+    --audio-source SOURCE for an explicit PulseAudio/PipeWire input signal.
   - Other commands are passed through to the hushnote CLI unchanged.
   - stop sends the active watcher stop signal.
   - process-last finds the most recent recording across all categories.
@@ -48,7 +50,24 @@ if [[ "$1" == "sky" || "$1" == "dsolver" || "$1" == "dewiz" || "$1" == "board" ]
   export HUSHNOTE_CATEGORY="$1"
   shift
   export HUSHNOTE_TRANSCRIBE_FORMAT="md"
-  recording="$("$ROOT/hushnote" record "$@")"
+  record_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --audio-source-type)
+        export AUDIO_SOURCE_TYPE="$2"
+        shift 2
+        ;;
+      --audio-source)
+        export AUDIO_SOURCE="$2"
+        shift 2
+        ;;
+      *)
+        record_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  recording="$("$ROOT/hushnote" record "${record_args[@]}")"
   "$ROOT/venv/bin/python3" "$ROOT/scripts/hushmeet-queue.py" enqueue "$recording" --category "$HUSHNOTE_CATEGORY"
   echo "Queued for nightly processing: $recording"
   exit 0

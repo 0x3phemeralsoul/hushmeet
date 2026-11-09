@@ -7,80 +7,27 @@ stored in the repository or Obsidian vault.
 """
 
 import argparse
-import json
-import os
-import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ROOT = Path("/home/ephy/dev/hushnote")
-CONFIG_PATH = Path.home() / ".config/hushmeet/watcher.json"
-STATE_PATH = Path.home() / ".local/state/hushmeet/active.json"
+from hushmeet_calendar import calendar_events, load_config
+from hushmeet_recording import (
+    CATEGORIES,
+    active_recording,
+    start_recording,
+    stop_recording,
+    write_active_recording,
+)
+
 DEFAULT_DISCONNECT_GRACE_SECONDS = 90
-SCOPES = ["https://www.googleapis.com/auth/calendar.events.readonly"]
-CATEGORIES = [
-    ("sky", "SKY"),
-    ("dsolver", "dSolver"),
-    ("dewiz", "Dewiz Command Room"),
-    ("board", "Board Meetings"),
-]
-
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        raise RuntimeError(
-            f"Missing {CONFIG_PATH}. Copy watcher.example.json there and set google_client_secret_file."
-        )
-    return json.loads(CONFIG_PATH.read_text())
 
 
 def now_events(config: dict, require_meet: bool = True) -> list[dict]:
-    """Return calendar events currently in progress.
-
-    Google Meet joins require a matching Meet URL. Discord has no Calendar
-    URL, so it may use the active timed event title after the user confirms it.
-    """
-    try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-    except ImportError as exc:
-        raise RuntimeError("Missing Google dependencies; run the HushMeet Python installation step.") from exc
-
-    token_path = Path(config["google_token_file"]).expanduser()
-    if not token_path.exists():
-        raise RuntimeError("Google Calendar is not authorized. Run hushmeet-calendar-auth first.")
-    credentials = Credentials.from_authorized_user_file(token_path, SCOPES)
-    if credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
-        token_path.write_text(credentials.to_json())
-        token_path.chmod(0o600)
-    if not credentials.valid:
-        raise RuntimeError("Google Calendar token is invalid. Run hushmeet-calendar-auth again.")
-
-    now = datetime.now(timezone.utc)
-    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-    response = service.events().list(
-        calendarId=config.get("calendar_id", "primary"),
-        timeMin=(now - timedelta(minutes=1)).isoformat(),
-        timeMax=(now + timedelta(minutes=1)).isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=20,
-    ).execute()
-    events = []
-    for event in response.get("items", []):
-        conference = event.get("conferenceData", {})
-        entry_points = conference.get("entryPoints", [])
-        has_meet = "meet.google.com" in event.get("hangoutLink", "") or any(
-            "meet.google.com" in point.get("uri", "") for point in entry_points
-        )
-        if not require_meet or has_meet:
-            events.append(event)
-    return events
+    """Return Calendar events currently in progress for watcher decisions."""
+    return calendar_events(config, require_meet=require_meet)
 
 
 def event_meet_urls(event: dict) -> set[str]:
@@ -133,47 +80,14 @@ def choose_category(title: str, source: str) -> str | None:
     return next((value for value, label in CATEGORIES if label == selected), None)
 
 
-def active_recording() -> dict | None:
-    if not STATE_PATH.exists():
-        return None
-    try:
-        return json.loads(STATE_PATH.read_text())
-    except json.JSONDecodeError:
-        return None
-
-
-def write_active_recording(data: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(data))
-
-
 def record(category: str, title: str, source: str, meet_url: str | None = None) -> None:
-    if STATE_PATH.exists():
+    if active_recording():
         return
-    command = [str(ROOT / "scripts/hushmeet"), category, "--title", title]
-    process = subprocess.Popen(command, start_new_session=True)
-    data = {"pid": process.pid, "title": title, "source": source}
-    if meet_url:
-        data["meet_url"] = meet_url.rstrip("/")
-    write_active_recording(data)
+    start_recording(category, title, source, meet_url=meet_url)
     subprocess.run(
         ["notify-send", "HushMeet recording started", f"{title} ({source}). Use: hushmeet stop"],
         check=False,
     )
-
-
-def stop_recording() -> int:
-    if not STATE_PATH.exists():
-        print("No watcher-started recording is active.")
-        return 0
-    data = json.loads(STATE_PATH.read_text())
-    try:
-        os.killpg(int(data["pid"]), signal.SIGINT)
-    except ProcessLookupError:
-        pass
-    STATE_PATH.unlink(missing_ok=True)
-    print("HushMeet stop signal sent; recording will be queued for nightly processing.")
-    return 0
 
 
 def clear_disconnect(source: str, meet_url: str | None = None) -> None:
@@ -305,7 +219,11 @@ def main() -> int:
     parser.add_argument("--meet-left-url", help="handle a confirmed left Google Meet URL")
     args = parser.parse_args()
     if args.stop:
-        return stop_recording()
+        if stop_recording():
+            print("HushMeet stop signal sent; recording will be queued for nightly processing.")
+        else:
+            print("No watcher-started recording is active.")
+        return 0
     if args.meet_url:
         return handle_meet_join(args.meet_url)
     if args.meet_left_url:

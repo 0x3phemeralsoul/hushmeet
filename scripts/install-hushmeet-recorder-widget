@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+
+install -d "$APPLICATIONS_DIR" "$AUTOSTART_DIR"
+sed "s|@HUSHNOTE_ROOT@|$ROOT|g" \
+  "$ROOT/desktop/io.hushnote.RecorderWidget.desktop.in" \
+  > "$APPLICATIONS_DIR/io.hushnote.RecorderWidget.desktop"
+sed "s|@HUSHNOTE_ROOT@|$ROOT|g" \
+  "$ROOT/desktop/io.hushnote.RecorderWidget.autostart.desktop.in" \
+  > "$AUTOSTART_DIR/io.hushnote.RecorderWidget.desktop"
+
+desktop-file-validate "$APPLICATIONS_DIR/io.hushnote.RecorderWidget.desktop"
+desktop-file-validate "$AUTOSTART_DIR/io.hushnote.RecorderWidget.desktop"
+update-desktop-database "$APPLICATIONS_DIR" 2>/dev/null || true
+echo "Installed Hushnote Recorder Widget launcher and GNOME autostart entry."

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hushnote Recorder Widget
+Comment=Show Hushnote recording controls in the top bar
+Exec=@HUSHNOTE_ROOT@/scripts/hushmeet-recorder-widget --background
+Icon=audio-input-microphone
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
