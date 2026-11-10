@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 RECORDING = importlib.import_module("hushmeet_recording")
 CALENDAR = importlib.import_module("hushmeet_calendar")
+ACTIVITY = importlib.import_module("hushmeet_mic_activity")
 
 
 class RecordingStateTests(TestCase):
@@ -105,6 +106,30 @@ class AudioInputTests(TestCase):
         ):
             inputs = RECORDING.available_audio_inputs()
         self.assertEqual(inputs[0].label, "Default microphone")
+
+
+class MicrophoneActivityTests(TestCase):
+    def test_rms_level_distinguishes_silence_from_speech_level_samples(self) -> None:
+        self.assertEqual(ACTIVITY.rms_level(b"\x00\x00" * 8), 0.0)
+        self.assertGreater(ACTIVITY.rms_level((1_000).to_bytes(2, "little", signed=True) * 8), 250)
+
+    def test_explicit_microphone_source_is_reused_for_activity_detection(self) -> None:
+        state = {"audio_source": "alsa_input.usb-jabra"}
+        self.assertEqual(ACTIVITY.microphone_source_for_recording(state), "alsa_input.usb-jabra")
+
+    def test_monitor_output_selection_falls_back_to_default_microphone(self) -> None:
+        state = {"audio_source": "alsa_output.speakers.monitor"}
+        result = SimpleNamespace(returncode=0, stdout="alsa_input.default\n")
+        with patch.object(ACTIVITY.subprocess, "run", return_value=result):
+            self.assertEqual(ACTIVITY.microphone_source_for_recording(state), "alsa_input.default")
+
+    def test_activity_holds_briefly_after_a_signal(self) -> None:
+        monitor = ACTIVITY.MicrophoneActivityMonitor("alsa_input.default", hold_seconds=0.5)
+        monitor._last_signal_at = 10.0
+        with patch.object(ACTIVITY.time, "monotonic", return_value=10.4):
+            self.assertTrue(monitor.is_active())
+        with patch.object(ACTIVITY.time, "monotonic", return_value=10.6):
+            self.assertFalse(monitor.is_active())
 
 
 class NearbyCalendarTests(TestCase):
