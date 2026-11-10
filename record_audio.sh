@@ -20,6 +20,9 @@ fi
 OUTPUT_DIR="${RECORDINGS_DIR:-./recordings}"
 DATE=$(date +%Y%m%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+# The visible recording name is intentionally minute-granular: it is concise
+# enough for the meeting vault while retaining chronological ordering.
+RECORDING_LABEL=$(LC_ALL=C date +%Y%b%d-%H%M | tr '[:lower:]' '[:upper:]')
 OUTPUT_FILE=""
 
 # Parse arguments
@@ -56,18 +59,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Keep the human-recognizable meeting title in the vault path while retaining
-# a timestamp for ordering and collision resistance. Custom --output paths are
-# left untouched.
+# Keep a sortable timestamp at the beginning of every generated recording
+# name, followed by the human-recognizable meeting title. Custom --output
+# paths are left untouched.
 if [ -z "$OUTPUT_FILE" ]; then
     TITLE_COMPONENT=$(printf '%s' "$TITLE" \
         | tr '\n\r' '  ' \
         | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s#[/\\:*?"<>|]#-#g' \
         | cut -c1-100)
     if [ -n "$TITLE_COMPONENT" ]; then
-        MEETING_BASENAME="${TITLE_COMPONENT} — ${TIMESTAMP}"
+        MEETING_BASENAME="${RECORDING_LABEL} — ${TITLE_COMPONENT}"
     else
-        MEETING_BASENAME="Meeting — ${TIMESTAMP}"
+        MEETING_BASENAME="${RECORDING_LABEL} — Meeting"
     fi
     MEETING_DIR="${OUTPUT_DIR}/${DATE}/${MEETING_BASENAME}"
     OUTPUT_FILE="${MEETING_DIR}/${MEETING_BASENAME}.wav"

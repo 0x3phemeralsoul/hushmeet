@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,19 @@ from typing import Any
 QUEUE_PATH = Path.home() / ".local/state/hushmeet/process-queue.json"
 LOCK_PATH = Path.home() / ".local/state/hushmeet/process-queue.lock"
 UNFINISHED_STATUSES = {"pending", "running", "failed"}
+ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_][0-?]*[ -/]*[@-~])")
+
+
+def clean_display_text(value: object) -> str:
+    """Remove terminal formatting and other non-printing characters for GTK."""
+    text = ANSI_ESCAPE.sub("", str(value))
+    lines = []
+    for line in text.splitlines():
+        printable = "".join(character for character in line if character.isprintable())
+        normalized = " ".join(printable.split())
+        if normalized:
+            lines.append(normalized)
+    return "\n".join(lines)
 
 
 def _read_queue() -> dict[str, Any]:
@@ -33,7 +47,7 @@ def _read_queue() -> dict[str, Any]:
 def recording_name(job: dict[str, Any]) -> str:
     audio_file = job.get("audio_file")
     if isinstance(audio_file, str) and audio_file:
-        return Path(audio_file).parent.name or Path(audio_file).stem
+        return clean_display_text(Path(audio_file).parent.name or Path(audio_file).stem)
     return "Unknown recording"
 
 
@@ -63,5 +77,7 @@ def job_detail(job: dict[str, Any]) -> str:
     if timestamp:
         detail += f" · {timestamp.replace('T', ' ')[:16]}"
     if status == "failed" and job.get("last_error"):
-        detail += f"\n{str(job['last_error'])[:160]}"
+        error = clean_display_text(job["last_error"])
+        if error:
+            detail += f"\n{error[:320]}"
     return detail
