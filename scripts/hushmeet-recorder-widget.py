@@ -14,6 +14,7 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator3
 from gi.repository import Gio, GLib, Gtk
 
 from hushmeet_calendar import load_config, nearby_events
+from hushmeet_mic_activity import MicrophoneActivityMonitor, microphone_source_for_recording
 from hushmeet_recording import (
     CATEGORIES,
     AudioInput,
@@ -48,6 +49,10 @@ class RecorderWidget(Gtk.Application):
         self.start_button: Gtk.Button | None = None
         self.nearby: list[dict[str, Any]] = []
         self.audio_inputs: dict[str, AudioInput] = {}
+        self.microphone_monitor: MicrophoneActivityMonitor | None = None
+        self.monitor_key: tuple[int, str] | None = None
+        self.microphone_active = False
+        self.blink_on = False
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
@@ -62,6 +67,11 @@ class RecorderWidget(Gtk.Application):
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.refresh_state()
         GLib.timeout_add_seconds(1, self.refresh_state)
+        GLib.timeout_add(250, self.refresh_microphone_activity)
+
+    def do_shutdown(self) -> None:
+        self._stop_microphone_monitor()
+        Gtk.Application.do_shutdown(self)
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         self.background = "--background" in command_line.get_arguments()
@@ -88,6 +98,11 @@ class RecorderWidget(Gtk.Application):
             )
             audio.set_sensitive(False)
             menu.append(audio)
+            activity = Gtk.MenuItem.new_with_label(
+                "Microphone: signal detected" if self.microphone_active else "Microphone: listening"
+            )
+            activity.set_sensitive(False)
+            menu.append(activity)
             menu.append(Gtk.SeparatorMenuItem())
             stop = Gtk.MenuItem.new_with_label("Stop recording…")
             stop.connect("activate", self.on_stop_requested)
@@ -108,20 +123,69 @@ class RecorderWidget(Gtk.Application):
 
     def refresh_state(self) -> bool:
         state = active_recording()
+        self._sync_microphone_monitor(state)
+        self._render_indicator(state)
         if self.indicator:
-            if state:
-                title = state.get("title", "Untitled recording")
-                category = state.get("category_label") or category_label(state.get("category", "sky"))
-                self.indicator.set_icon_full("media-record-symbolic", "Recording")
-                self.indicator.set_label(f"REC · {title} · {category}", "REC")
-                self.indicator.set_title(f"Recording: {title} ({category})")
-            else:
-                self.indicator.set_icon_full("media-record-symbolic", "Record meeting")
-                self.indicator.set_label("Record", "Record")
-                self.indicator.set_title("Hushnote Recorder Widget")
             self._build_menu(state)
         if self.status_label and self.window and self.window.get_visible():
             self._render_window_state(state)
+        return True
+
+    def _render_indicator(self, state: dict[str, Any] | None) -> None:
+        if not self.indicator:
+            return
+        if state:
+            title = state.get("title", "Untitled recording")
+            category = state.get("category_label") or category_label(state.get("category", "sky"))
+            microphone_pulse = self.microphone_active and self.blink_on
+            icon = "audio-input-microphone-symbolic" if microphone_pulse else "media-record-symbolic"
+            marker = " ●" if microphone_pulse else ""
+            self.indicator.set_icon_full(icon, "Microphone signal detected" if microphone_pulse else "Recording")
+            self.indicator.set_label(f"REC{marker} · {title} · {category}", "REC")
+            self.indicator.set_title(
+                f"Recording: {title} ({category})"
+                + (" — microphone signal detected" if self.microphone_active else "")
+            )
+        else:
+            self.indicator.set_icon_full("media-record-symbolic", "Record meeting")
+            self.indicator.set_label("Record", "Record")
+            self.indicator.set_title("Hushnote Recorder Widget")
+
+    def _stop_microphone_monitor(self) -> None:
+        if self.microphone_monitor:
+            self.microphone_monitor.stop()
+        self.microphone_monitor = None
+        self.monitor_key = None
+        self.microphone_active = False
+        self.blink_on = False
+
+    def _sync_microphone_monitor(self, state: dict[str, Any] | None) -> None:
+        if not state:
+            self._stop_microphone_monitor()
+            return
+        try:
+            source = microphone_source_for_recording(state)
+            key = (int(state["pid"]), source)
+        except (KeyError, TypeError, ValueError):
+            self._stop_microphone_monitor()
+            return
+        if key == self.monitor_key:
+            return
+        self._stop_microphone_monitor()
+        self.microphone_monitor = MicrophoneActivityMonitor(source)
+        self.microphone_monitor.start()
+        self.monitor_key = key
+
+    def refresh_microphone_activity(self) -> bool:
+        state = active_recording()
+        active = bool(self.microphone_monitor and self.microphone_monitor.is_active())
+        if active:
+            self.blink_on = not self.blink_on
+        else:
+            self.blink_on = False
+        if active != self.microphone_active or active:
+            self.microphone_active = active
+            self._render_indicator(state)
         return True
 
     def _make_window(self) -> None:
