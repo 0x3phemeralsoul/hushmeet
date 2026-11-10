@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 RECORDING = importlib.import_module("hushmeet_recording")
 CALENDAR = importlib.import_module("hushmeet_calendar")
 ACTIVITY = importlib.import_module("hushmeet_mic_activity")
+PROCESSING_STATUS = importlib.import_module("hushmeet_processing_status")
 
 
 class RecordingStateTests(TestCase):
@@ -130,6 +131,59 @@ class MicrophoneActivityTests(TestCase):
             self.assertTrue(monitor.is_active())
         with patch.object(ACTIVITY.time, "monotonic", return_value=10.6):
             self.assertFalse(monitor.is_active())
+
+
+class ProcessingStatusTests(TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        self.queue_path = Path(self.temporary_directory.name) / "process-queue.json"
+        self.lock_path = Path(self.temporary_directory.name) / "process-queue.lock"
+        self.queue_patch = patch.object(PROCESSING_STATUS, "QUEUE_PATH", self.queue_path)
+        self.lock_patch = patch.object(PROCESSING_STATUS, "LOCK_PATH", self.lock_path)
+        self.queue_patch.start()
+        self.lock_patch.start()
+
+    def tearDown(self) -> None:
+        self.lock_patch.stop()
+        self.queue_patch.stop()
+        self.temporary_directory.cleanup()
+
+    def test_all_unfinished_jobs_and_ten_latest_completed_jobs_are_returned(self) -> None:
+        pending = [
+            {"audio_file": f"/meetings/pending-{index}/audio.wav", "status": "pending", "created_at": str(index)}
+            for index in range(3)
+        ]
+        completed = [
+            {
+                "audio_file": f"/meetings/finished-{index}/audio.wav",
+                "status": "succeeded",
+                "finished_at": f"2026-11-10T{index:02}:00:00+00:00",
+            }
+            for index in range(12)
+        ]
+        self.queue_path.write_text(json.dumps({"jobs": [*pending, *completed]}))
+
+        unfinished, recent = PROCESSING_STATUS.processing_status()
+
+        self.assertEqual(len(unfinished), 3)
+        self.assertEqual(len(recent), 10)
+        self.assertEqual(PROCESSING_STATUS.recording_name(recent[0]), "finished-11")
+        self.assertEqual(PROCESSING_STATUS.recording_name(recent[-1]), "finished-2")
+
+    def test_failed_jobs_remain_visible_with_their_error(self) -> None:
+        job = {
+            "audio_file": "/meetings/failed/audio.wav",
+            "status": "failed",
+            "category": "sky",
+            "last_error": "transcription model unavailable",
+        }
+        self.queue_path.write_text(json.dumps({"jobs": [job]}))
+
+        unfinished, recent = PROCESSING_STATUS.processing_status()
+
+        self.assertEqual(unfinished, [job])
+        self.assertEqual(recent, [])
+        self.assertIn("transcription model unavailable", PROCESSING_STATUS.job_detail(job))
 
 
 class NearbyCalendarTests(TestCase):

@@ -15,6 +15,7 @@ from gi.repository import Gio, GLib, Gtk
 
 from hushmeet_calendar import load_config, nearby_events
 from hushmeet_mic_activity import MicrophoneActivityMonitor, microphone_source_for_recording
+from hushmeet_processing_status import job_detail, processing_status, recording_name
 from hushmeet_recording import (
     CATEGORIES,
     AudioInput,
@@ -47,6 +48,7 @@ class RecorderWidget(Gtk.Application):
         self.category_combo: Gtk.ComboBoxText | None = None
         self.audio_combo: Gtk.ComboBoxText | None = None
         self.start_button: Gtk.Button | None = None
+        self.queue_list: Gtk.ListBox | None = None
         self.nearby: list[dict[str, Any]] = []
         self.audio_inputs: dict[str, AudioInput] = {}
         self.microphone_monitor: MicrophoneActivityMonitor | None = None
@@ -68,6 +70,7 @@ class RecorderWidget(Gtk.Application):
         self.refresh_state()
         GLib.timeout_add_seconds(1, self.refresh_state)
         GLib.timeout_add(250, self.refresh_microphone_activity)
+        GLib.timeout_add_seconds(10, self.refresh_processing_status)
 
     def do_shutdown(self) -> None:
         self._stop_microphone_monitor()
@@ -190,7 +193,7 @@ class RecorderWidget(Gtk.Application):
 
     def _make_window(self) -> None:
         self.window = Gtk.ApplicationWindow(application=self, title="Hushnote Recorder Widget")
-        self.window.set_default_size(560, 320)
+        self.window.set_default_size(600, 620)
         self.window.set_border_width(18)
         self.window.connect("delete-event", lambda *_: self.window.hide_on_delete())
 
@@ -199,6 +202,17 @@ class RecorderWidget(Gtk.Application):
         self.status_label = Gtk.Label(xalign=0)
         self.status_label.set_line_wrap(True)
         box.pack_start(self.status_label, False, False, 0)
+
+        queue_heading = Gtk.Label(label="Recording processing status", xalign=0)
+        queue_heading.get_style_context().add_class("title-4")
+        box.pack_start(queue_heading, False, False, 0)
+        queue_scroller = Gtk.ScrolledWindow()
+        queue_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        queue_scroller.set_min_content_height(210)
+        self.queue_list = Gtk.ListBox()
+        self.queue_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        queue_scroller.add(self.queue_list)
+        box.pack_start(queue_scroller, True, True, 0)
 
         grid = Gtk.Grid(column_spacing=12, row_spacing=10)
         box.pack_start(grid, True, True, 0)
@@ -239,10 +253,54 @@ class RecorderWidget(Gtk.Application):
         self._render_window_state(state)
         if not state:
             self.populate_form()
+        self.refresh_processing_status()
         # Gtk.Widget.present() only presents the toplevel.  Its child widgets
         # remain hidden until explicitly shown on their first construction.
         self.window.show_all()
         self.window.present()
+
+    def _add_queue_heading(self, text: str) -> None:
+        assert self.queue_list
+        label = Gtk.Label(label=text, xalign=0)
+        label.get_style_context().add_class("heading")
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        row.add(label)
+        self.queue_list.add(row)
+
+    def _add_queue_job(self, job: dict[str, Any]) -> None:
+        assert self.queue_list
+        details = Gtk.Label(xalign=0)
+        details.set_line_wrap(True)
+        details.set_markup(
+            f"<b>{GLib.markup_escape_text(recording_name(job))}</b>\n"
+            f"{GLib.markup_escape_text(job_detail(job))}"
+        )
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        row.add(details)
+        self.queue_list.add(row)
+
+    def refresh_processing_status(self) -> bool:
+        if not self.queue_list:
+            return True
+        for row in self.queue_list.get_children():
+            self.queue_list.remove(row)
+        unfinished, completed = processing_status()
+        self._add_queue_heading(f"To be processed ({len(unfinished)})")
+        if unfinished:
+            for job in unfinished:
+                self._add_queue_job(job)
+        else:
+            self._add_queue_job({"audio_file": "No recordings waiting", "status": "up to date"})
+        self._add_queue_heading("Last 10 processed")
+        if completed:
+            for job in completed:
+                self._add_queue_job(job)
+        else:
+            self._add_queue_job({"audio_file": "No processed recordings yet", "status": ""})
+        self.queue_list.show_all()
+        return True
 
     def _render_window_state(self, state: dict[str, Any] | None) -> None:
         if not self.status_label or not self.start_button:
