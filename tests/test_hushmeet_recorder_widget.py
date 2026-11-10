@@ -197,6 +197,19 @@ class ProcessingStatusTests(TestCase):
         self.assertEqual(details, "SKY · failed\n[INFO] Transcribing\nError: model unavailable")
         self.assertNotIn("\x1b", details)
 
+    def test_legacy_recording_names_are_displayed_with_a_leading_timestamp(self) -> None:
+        job = {
+            "audio_file": (
+                "/meetings/SKY/20261109/"
+                "NFAT Spell Planning — 20261109_160725/NFAT Spell Planning — 20261109_160725.wav"
+            )
+        }
+
+        self.assertEqual(
+            PROCESSING_STATUS.recording_name(job),
+            "2026NOV09-1607 — NFAT Spell Planning",
+        )
+
 
 class NearbyCalendarTests(TestCase):
     def test_in_progress_event_precedes_an_equally_near_future_event(self) -> None:
