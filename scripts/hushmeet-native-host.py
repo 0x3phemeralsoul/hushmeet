@@ -9,6 +9,7 @@ from pathlib import Path
 
 WATCHER = Path("/home/ephy/dev/hushnote/scripts/hushmeet-watcher.py")
 PYTHON = Path("/home/ephy/dev/hushnote/venv/bin/python3")
+CALENDAR_AUTH_NOTICE = "Google Calendar access needs reauthorization. Run: hushmeet-calendar-auth"
 
 
 def read_message() -> dict | None:
@@ -25,6 +26,24 @@ def write_message(payload: dict) -> None:
     sys.stdout.buffer.write(struct.pack("@I", len(encoded)))
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()
+
+
+def calendar_auth_notice(stderr: str) -> str | None:
+    """Avoid exposing token details while making a revoked grant actionable."""
+    detail = stderr.lower()
+    auth_markers = (
+        "invalid_grant",
+        "google calendar token is invalid",
+        "google calendar is not authorized",
+        "google calendar authorization is not bound to the allowed account",
+        "missing allowed_google_account",
+    )
+    return CALENDAR_AUTH_NOTICE if any(marker in detail for marker in auth_markers) else None
+
+
+def notify_calendar_auth_failure(notice: str) -> None:
+    print(f"hushmeet native host: {notice}", file=sys.stderr)
+    subprocess.run(["notify-send", "HushMeet Calendar needs attention", notice], check=False)
 
 
 def main() -> None:
@@ -44,6 +63,9 @@ def main() -> None:
             capture_output=True,
             check=False,
         )
+        if action == "joined" and result.returncode != 0:
+            if notice := calendar_auth_notice(result.stderr):
+                notify_calendar_auth_failure(notice)
         write_message({"ok": result.returncode == 0, "message": result.stderr.strip()})
 
 
