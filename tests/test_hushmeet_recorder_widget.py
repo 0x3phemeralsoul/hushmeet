@@ -185,6 +185,18 @@ class ProcessingStatusTests(TestCase):
         self.assertEqual(recent, [])
         self.assertIn("transcription model unavailable", PROCESSING_STATUS.job_detail(job))
 
+    def test_terminal_escape_sequences_are_not_rendered_in_failure_details(self) -> None:
+        job = {
+            "audio_file": "/meetings/failed/audio.wav",
+            "status": "failed",
+            "last_error": "\x1b[0;34m[INFO]\x1b[0m Transcribing\nError: model unavailable\x07",
+        }
+
+        details = PROCESSING_STATUS.job_detail(job)
+
+        self.assertEqual(details, "SKY · failed\n[INFO] Transcribing\nError: model unavailable")
+        self.assertNotIn("\x1b", details)
+
 
 class NearbyCalendarTests(TestCase):
     def test_in_progress_event_precedes_an_equally_near_future_event(self) -> None:
