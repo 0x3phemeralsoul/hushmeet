@@ -29,6 +29,7 @@ from hushmeet_recording import (
 
 
 APPLICATION_ID = "io.hushnote.RecorderWidget"
+PROCESSING_STATUS_REFRESH_SECONDS = 60 * 60
 
 
 class RecorderWidget(Gtk.Application):
@@ -70,7 +71,7 @@ class RecorderWidget(Gtk.Application):
         self.refresh_state()
         GLib.timeout_add_seconds(1, self.refresh_state)
         GLib.timeout_add(250, self.refresh_microphone_activity)
-        GLib.timeout_add_seconds(10, self.refresh_processing_status)
+        GLib.timeout_add_seconds(PROCESSING_STATUS_REFRESH_SECONDS, self.refresh_processing_status)
 
     def do_shutdown(self) -> None:
         self._stop_microphone_monitor()
