@@ -175,6 +175,9 @@ class RecorderWidget(Gtk.Application):
         self._render_window_state(state)
         if not state:
             self.populate_form()
+        # Gtk.Widget.present() only presents the toplevel.  Its child widgets
+        # remain hidden until explicitly shown on their first construction.
+        self.window.show_all()
         self.window.present()
 
     def _render_window_state(self, state: dict[str, Any] | None) -> None:
