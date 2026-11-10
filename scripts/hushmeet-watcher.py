@@ -9,6 +9,7 @@ stored in the repository or Obsidian vault.
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -16,11 +17,21 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from hushmeet_calendar_policy import (
+    CALENDAR_SCOPES,
+    calendar_reauthorization_due,
+    verify_authorized_account_state,
+)
+
 ROOT = Path("/home/ephy/dev/hushnote")
 CONFIG_PATH = Path.home() / ".config/hushmeet/watcher.json"
 STATE_PATH = Path.home() / ".local/state/hushmeet/active.json"
 DEFAULT_DISCONNECT_GRACE_SECONDS = 90
-SCOPES = ["https://www.googleapis.com/auth/calendar.events.readonly"]
+DEFAULT_DISCORD_CONFIRM_SECONDS = 30
+DEFAULT_CALENDAR_HEALTH_CHECK_SECONDS = 6 * 60 * 60
+DEFAULT_CALENDAR_ERROR_REMINDER_SECONDS = 60 * 60
+DEFAULT_CALENDAR_REAUTH_REMINDER_SECONDS = 24 * 60 * 60
+SCOPES = CALENDAR_SCOPES
 CATEGORIES = [
     ("sky", "SKY"),
     ("dsolver", "dSolver"),
@@ -54,6 +65,9 @@ def now_events(config: dict, require_meet: bool = True) -> list[dict]:
     if not token_path.exists():
         raise RuntimeError("Google Calendar is not authorized. Run hushmeet-calendar-auth first.")
     credentials = Credentials.from_authorized_user_file(token_path, SCOPES)
+    if not credentials.refresh_token:
+        raise RuntimeError("Google Calendar token is invalid. Run hushmeet-calendar-auth again.")
+    verify_authorized_account_state(config, credentials.refresh_token)
     if credentials.expired and credentials.refresh_token:
         credentials.refresh(Request())
         token_path.write_text(credentials.to_json())
@@ -83,6 +97,71 @@ def now_events(config: dict, require_meet: bool = True) -> list[dict]:
     return events
 
 
+def calendar_error_notice(exc: Exception) -> str:
+    """Return a safe, actionable notification for Calendar failures."""
+    detail = str(exc).lower()
+    auth_markers = (
+        "invalid_grant",
+        "google calendar token is invalid",
+        "google calendar is not authorized",
+        "google calendar authorization is not bound to the allowed account",
+        "missing allowed_google_account",
+    )
+    if any(marker in detail for marker in auth_markers):
+        return "Google Calendar access needs reauthorization. Run: hushmeet-calendar-auth"
+    return "Google Calendar could not be checked. Open the HushMeet watcher logs for details."
+
+
+def calendar_reauthorization_notice(config: dict) -> str | None:
+    """Warn before a seven-day OAuth test-user refresh token expires."""
+    if calendar_reauthorization_due(config):
+        return "HushMeet Calendar test authorization is due for renewal. Run: hushmeet-calendar-auth"
+    return None
+
+
+def send_notification(title: str, body: str) -> None:
+    """Best-effort desktop notification; logging remains the fallback."""
+    subprocess.run(["notify-send", title, body], check=False)
+
+
+def check_calendar_health(
+    config: dict,
+    last_error: str | None,
+    last_notification_at: float,
+    now: float,
+    reminder_seconds: int,
+    reauthorization_reminder_seconds: int = DEFAULT_CALENDAR_REAUTH_REMINDER_SECONDS,
+) -> tuple[str | None, float]:
+    """Validate read-only Calendar access without starting a recording.
+
+    Identical failures are rate-limited, but a recovered connection clears the
+    state so a later failure is immediately visible again.
+    """
+    try:
+        now_events(config)
+        reauthorization_notice = calendar_reauthorization_notice(config)
+    except Exception as exc:
+        notice = calendar_error_notice(exc)
+        print(f"hushmeet watcher: Calendar health check failed: {exc}", file=sys.stderr)
+        if notice != last_error or now - last_notification_at >= reminder_seconds:
+            send_notification("HushMeet Calendar needs attention", notice)
+            return notice, now
+        return notice, last_notification_at
+    if reauthorization_notice:
+        print(
+            f"hushmeet watcher: {reauthorization_notice}",
+            file=sys.stderr,
+        )
+        if (
+            reauthorization_notice != last_error
+            or now - last_notification_at >= reauthorization_reminder_seconds
+        ):
+            send_notification("HushMeet Calendar needs attention", reauthorization_notice)
+            return reauthorization_notice, now
+        return reauthorization_notice, last_notification_at
+    return None, 0.0
+
+
 def event_meet_urls(event: dict) -> set[str]:
     urls = {event.get("hangoutLink", "")}
     for point in event.get("conferenceData", {}).get("entryPoints", []):
@@ -90,17 +169,45 @@ def event_meet_urls(event: dict) -> set[str]:
     return {url.rstrip("/") for url in urls if url}
 
 
-def discord_in_voice() -> bool:
-    """Best-effort PipeWire/PulseAudio detection of a Discord communication stream."""
-    result = subprocess.run(["pactl", "list", "sink-inputs"], text=True, capture_output=True, check=False)
+DISCORD_APPLICATION_PROPERTY = re.compile(
+    r'^\s*(?:application\.name|application\.process\.binary|application\.icon_name)\s*=\s*"discord"\s*$',
+    re.IGNORECASE | re.MULTILINE,
+)
+COMMUNICATION_ROLE_PROPERTY = re.compile(
+    r'^\s*media\.role\s*=\s*"communication"\s*$',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def pactl_stream_blocks(stream_type: str, header: str) -> list[str]:
+    """Return the individual PulseAudio stream records, or none on failure."""
+    result = subprocess.run(["pactl", "list", stream_type], text=True, capture_output=True, check=False)
     if result.returncode != 0:
-        return False
-    text = result.stdout.lower()
-    blocks = text.split("sink input #")
-    return any(
-        "discord" in block
-        and ("media.role = \"communication\"" in block or "application.process.binary = \"discord\"" in block)
-        for block in blocks
+        return []
+    return result.stdout.split(header)[1:]
+
+
+def is_discord_communication_stream(block: str) -> bool:
+    """Identify an actual Discord communication stream from its exact properties."""
+    return bool(
+        DISCORD_APPLICATION_PROPERTY.search(block)
+        and COMMUNICATION_ROLE_PROPERTY.search(block)
+    )
+
+
+def discord_in_voice() -> bool:
+    """Require concurrent Discord communication playback and microphone capture.
+
+    Discord can create a playback stream for notifications, previews, and other
+    non-call activity. A joined voice call also opens a microphone capture
+    stream, so require both exact ``media.role=communication`` streams before
+    treating Discord as a meeting. This intentionally fails closed when the
+    desktop audio server cannot be queried.
+    """
+    playback_streams = pactl_stream_blocks("sink-inputs", "Sink Input #")
+    capture_streams = pactl_stream_blocks("source-outputs", "Source Output #")
+    return any(is_discord_communication_stream(block) for block in playback_streams) and any(
+        is_discord_communication_stream(block) for block in capture_streams
     )
 
 
@@ -273,13 +380,59 @@ def watch() -> int:
     config = load_config()
     poll_seconds = int(config.get("poll_seconds", 20))
     grace_seconds = int(config.get("disconnect_grace_seconds", DEFAULT_DISCONNECT_GRACE_SECONDS))
+    discord_confirm_seconds = int(
+        config.get("discord_confirm_seconds", DEFAULT_DISCORD_CONFIRM_SECONDS)
+    )
+    calendar_health_check_seconds = int(
+        config.get("calendar_health_check_seconds", DEFAULT_CALENDAR_HEALTH_CHECK_SECONDS)
+    )
+    calendar_error_reminder_seconds = int(
+        config.get("calendar_error_reminder_seconds", DEFAULT_CALENDAR_ERROR_REMINDER_SECONDS)
+    )
+    calendar_reauthorization_reminder_seconds = int(
+        config.get(
+            "calendar_reauthorization_reminder_seconds",
+            DEFAULT_CALENDAR_REAUTH_REMINDER_SECONDS,
+        )
+    )
     discord_prompted = False
+    discord_voice_started_at: float | None = None
+    next_calendar_health_check = 0.0
+    last_calendar_error: str | None = None
+    last_calendar_notification_at = 0.0
     while True:
         try:
+            current_time = time.monotonic()
+            if current_time >= next_calendar_health_check:
+                last_calendar_error, last_calendar_notification_at = check_calendar_health(
+                    config,
+                    last_calendar_error,
+                    last_calendar_notification_at,
+                    current_time,
+                    calendar_error_reminder_seconds,
+                    calendar_reauthorization_reminder_seconds,
+                )
+                retry_after = (
+                    calendar_error_reminder_seconds
+                    if last_calendar_error
+                    else calendar_health_check_seconds
+                )
+                next_calendar_health_check = current_time + retry_after
             in_discord_voice = discord_in_voice()
             if in_discord_voice:
                 clear_disconnect("Discord")
-            if in_discord_voice and not discord_prompted:
+                if discord_voice_started_at is None:
+                    discord_voice_started_at = current_time
+            else:
+                discord_prompted = False
+                discord_voice_started_at = None
+                mark_disconnect("Discord")
+            if (
+                in_discord_voice
+                and not discord_prompted
+                and discord_voice_started_at is not None
+                and current_time - discord_voice_started_at >= discord_confirm_seconds
+            ):
                 discord_prompted = True
                 try:
                     title = discord_calendar_title(config) or "Discord voice chat"
@@ -289,9 +442,6 @@ def watch() -> int:
                 category = choose_category(title, "Discord communication audio")
                 if category:
                     record(category, title, "Discord")
-            elif not in_discord_voice:
-                discord_prompted = False
-                mark_disconnect("Discord")
             prompt_after_disconnect_grace(grace_seconds)
         except Exception as exc:
             print(f"hushmeet watcher: {exc}", file=sys.stderr)
