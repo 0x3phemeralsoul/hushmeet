@@ -124,8 +124,7 @@ hushnote/
 ### High Priority
 1. **Voice-to-clipboard** - Quick voice note → clipboard integration
 2. **Real-time streaming** - Live transcription to cursor position
-3. **Waybar widget** - System tray/status bar integration
-4. **Speaker diarization** - Multi-speaker identification
+3. **Speaker diarization** - Multi-speaker identification
 
 ### Medium Priority
 1. GUI application (Electron/Tauri)

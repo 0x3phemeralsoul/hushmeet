@@ -137,6 +137,22 @@ Options:
 
 See [DIARIZATION.md](DIARIZATION.md) for the full speaker diarization guide.
 
+### GNOME recorder widget
+
+On Ubuntu GNOME with the Ubuntu AppIndicators extension, install the persistent
+top-bar recorder control with:
+
+```bash
+./scripts/install-hushmeet-recorder-widget
+```
+
+It starts on your next graphical login and is searchable as **Hushnote Recorder
+Widget**. The start form suggests a nearby Calendar meeting (within five
+minutes), selects a matching HushMeet category when possible, and defaults to
+your microphone. You can instead choose system audio, a microphone-plus-system
+mix, or any detected PulseAudio/PipeWire source. While active, its top-bar menu
+shows the meeting and category and provides a confirmed stop action.
+
 ## Pipeline
 
 The full recording workflow:
