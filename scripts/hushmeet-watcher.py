@@ -26,11 +26,56 @@ DEFAULT_DISCORD_CONFIRM_SECONDS = 30
 DEFAULT_CALENDAR_HEALTH_CHECK_SECONDS = 6 * 60 * 60
 DEFAULT_CALENDAR_ERROR_REMINDER_SECONDS = 60 * 60
 DEFAULT_CALENDAR_REAUTH_REMINDER_SECONDS = 24 * 60 * 60
+DEFAULT_CALENDAR_PROMPT_CHECK_SECONDS = 30
 
 
 def now_events(config: dict, require_meet: bool = True) -> list[dict]:
     """Return Calendar events currently in progress for watcher decisions."""
     return calendar_events(config, require_meet=require_meet)
+
+
+def _event_datetime(event: dict, field: str) -> datetime | None:
+    value = event.get(field, {}).get("dateTime")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def active_calendar_events(config: dict, now: datetime | None = None) -> list[dict]:
+    """Return non-all-day Calendar events currently in progress for a prompt."""
+    current_time = now or datetime.now(timezone.utc)
+    candidates = calendar_events(
+        config,
+        require_meet=False,
+        before_minutes=5,
+        after_minutes=1,
+        now=current_time,
+    )
+    return [
+        event
+        for event in candidates
+        if (start := _event_datetime(event, "start"))
+        and (end := _event_datetime(event, "end"))
+        and start <= current_time <= end
+    ]
+
+
+def calendar_event_key(event: dict) -> str:
+    """Keep one desktop prompt per Calendar event occurrence."""
+    return str(event.get("id") or event.get("iCalUID") or (
+        f"{event.get('summary', '')}|{event.get('start', {}).get('dateTime', '')}"
+    ))
+
+
+def prompt_calendar_recording(event: dict) -> None:
+    title = str(event.get("summary") or "Calendar meeting")
+    send_notification(
+        "HushMeet recording available",
+        f"{title} is in progress. Open Hushnote Recorder Widget to confirm details and start recording.",
+    )
 
 
 def calendar_error_notice(exc: Exception) -> str:
@@ -265,11 +310,17 @@ def watch() -> int:
             DEFAULT_CALENDAR_REAUTH_REMINDER_SECONDS,
         )
     )
+    calendar_prompt_check_seconds = int(
+        config.get("calendar_prompt_check_seconds", DEFAULT_CALENDAR_PROMPT_CHECK_SECONDS)
+    )
     discord_prompted = False
     discord_voice_started_at: float | None = None
     next_calendar_health_check = 0.0
+    next_calendar_prompt_check = 0.0
     last_calendar_error: str | None = None
     last_calendar_notification_at = 0.0
+    calendar_prompted: set[str] = set()
+    last_calendar_prompt_error: str | None = None
     while True:
         try:
             current_time = time.monotonic()
@@ -284,6 +335,21 @@ def watch() -> int:
                 )
                 retry_after = calendar_error_reminder_seconds if last_calendar_error else calendar_health_check_seconds
                 next_calendar_health_check = current_time + retry_after
+            if current_time >= next_calendar_prompt_check:
+                try:
+                    events = active_calendar_events(config)
+                    active_keys = {calendar_event_key(event) for event in events}
+                    for event in events:
+                        if calendar_event_key(event) not in calendar_prompted:
+                            prompt_calendar_recording(event)
+                    calendar_prompted.intersection_update(active_keys)
+                    calendar_prompted.update(active_keys)
+                    last_calendar_prompt_error = None
+                except Exception as exc:
+                    if str(exc) != last_calendar_prompt_error:
+                        print(f"hushmeet watcher: Calendar prompt check failed: {exc}", file=sys.stderr)
+                    last_calendar_prompt_error = str(exc)
+                next_calendar_prompt_check = current_time + max(1, calendar_prompt_check_seconds)
             in_discord_voice = discord_in_voice()
             if in_discord_voice:
                 clear_disconnect("Discord")
