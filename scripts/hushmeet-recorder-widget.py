@@ -98,7 +98,7 @@ class RecorderWidget(Gtk.Application):
             detail.set_sensitive(False)
             menu.append(detail)
             audio = Gtk.MenuItem.new_with_label(
-                f"Input: {state.get('audio_label', 'Default microphone')}"
+                f"Input: {state.get('audio_label', 'Default microphone + system audio')}"
             )
             audio.set_sensitive(False)
             menu.append(audio)
@@ -343,7 +343,7 @@ class RecorderWidget(Gtk.Application):
         self.audio_combo.remove_all()
         for item in self.audio_inputs.values():
             self.audio_combo.append(item.key, item.label)
-        self.audio_combo.set_active_id("microphone")
+        self.audio_combo.set_active_id("both")
 
     def on_nearby_changed(self, combo: Gtk.ComboBoxText) -> None:
         selected = combo.get_active_id()

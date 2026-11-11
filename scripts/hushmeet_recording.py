@@ -34,7 +34,7 @@ class AudioInput:
 
     key: str
     label: str
-    source_type: str = "microphone"
+    source_type: str = "both"
     source: str | None = None
 
 
@@ -97,7 +97,7 @@ def write_active_recording(data: dict[str, Any]) -> None:
 def recording_command(
     category: str,
     title: str,
-    audio_source_type: str = "microphone",
+    audio_source_type: str = "both",
     audio_source: str | None = None,
 ) -> list[str]:
     """Build the stable HushMeet invocation used by every recording client."""
@@ -119,7 +119,7 @@ def start_recording(
     title: str,
     source: str,
     *,
-    audio_source_type: str = "microphone",
+    audio_source_type: str = "both",
     audio_source: str | None = None,
     audio_label: str | None = None,
     meet_url: str | None = None,
@@ -145,7 +145,7 @@ def start_recording(
         "source": source,
         "audio_source_type": audio_source_type,
         "audio_source": audio_source,
-        "audio_label": audio_label or "Default microphone",
+        "audio_label": audio_label or "Default microphone + system audio",
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     if meet_url:
@@ -179,11 +179,9 @@ def _source_description(source: dict[str, Any]) -> str:
 
 
 def available_audio_inputs() -> list[AudioInput]:
-    """Return standard modes plus every PulseAudio/PipeWire source available."""
+    """Return system-audio mixes using the default or each selectable microphone."""
     inputs = [
-        AudioInput("microphone", "Default microphone"),
-        AudioInput("monitor", "System audio (default output monitor)", "monitor"),
-        AudioInput("both", "Microphone + system audio", "both"),
+        AudioInput("both", "Default microphone + system audio", "both"),
     ]
     result = subprocess.run(
         ["pactl", "--format=json", "list", "sources"],
@@ -205,11 +203,14 @@ def available_audio_inputs() -> list[AudioInput]:
         if not isinstance(source, dict) or not source.get("name"):
             continue
         source_name = str(source["name"])
+        if source_name.endswith(".monitor"):
+            continue
         description = _source_description(source)
         inputs.append(
             AudioInput(
                 key=f"source:{source_name}",
-                label=f"{description} ({source_name})",
+                label=f"{description} + system audio ({source_name})",
+                source_type="both",
                 source=source_name,
             )
         )
