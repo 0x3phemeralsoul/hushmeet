@@ -15,7 +15,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 
-ROOT = Path("/home/ephy/dev/hushnote")
+ROOT = Path(__file__).resolve().parents[1]
 MEETINGS_ROOT = Path("/home/ephy/dev/Dewiz/Meetings")
 QUEUE_PATH = Path.home() / ".local/state/hushmeet/process-queue.json"
 LOCK_PATH = Path.home() / ".local/state/hushmeet/process-queue.lock"
@@ -195,6 +195,27 @@ def update_job(audio_file: str, **fields) -> None:
         save_queue(data)
 
     with_lock(update)
+
+
+def dismiss_job(audio: Path) -> bool:
+    """Hide an intentionally skipped recording without deleting its audio."""
+    audio_file = str(audio.resolve())
+
+    def update() -> bool:
+        data = load_queue()
+        for job in data["jobs"]:
+            if job.get("audio_file") == audio_file:
+                job.update(
+                    status="ignored",
+                    last_error="Dismissed by user; audio retained without processing.",
+                    dismissed_at=now(),
+                )
+                job["updated_at"] = now()
+                save_queue(data)
+                return True
+        return False
+
+    return with_lock(update)
 
 
 def pending_jobs() -> list[dict]:
@@ -383,6 +404,9 @@ def main() -> int:
     process = sub.add_parser("process")
     process.add_argument("--limit", type=int)
 
+    dismiss = sub.add_parser("dismiss")
+    dismiss.add_argument("audio_file")
+
     sub.add_parser("list")
     sub.add_parser("repair")
 
@@ -397,6 +421,10 @@ def main() -> int:
         return 0
     if args.command == "process":
         return process_queue(args.limit)
+    if args.command == "dismiss":
+        dismissed = dismiss_job(Path(args.audio_file))
+        print("dismissed" if dismissed else "not queued")
+        return 0 if dismissed else 1
     if args.command == "list":
         return list_queue()
     if args.command == "repair":
