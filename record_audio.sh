@@ -74,23 +74,22 @@ fi
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Determine audio source.
-# AUDIO_SOURCE env var overrides everything.
+# Every HushMeet recording mixes participant/system sound with a microphone.
+# AUDIO_MICROPHONE_SOURCE optionally selects that microphone. AUDIO_SOURCE is
+# accepted as a legacy alias only when it names a non-monitor source.
 # AUDIO_SOURCE_TYPE controls what to capture:
 #   "microphone" (default) - default PulseAudio/PipeWire source (mic)
 #   "monitor"              - monitor of default sink (captures output audio,
 #                            needed for meeting audio on BT headsets)
 #   "both"                 - mix microphone + sink monitor into one recording
 #                            (captures both sides of a call)
-if [ -n "${AUDIO_SOURCE:-}" ]; then
-    RECORD_SOURCE="$AUDIO_SOURCE"
-    AUDIO_SOURCE_TYPE="microphone"  # treat explicit source as single source
-elif [ "${AUDIO_SOURCE_TYPE:-microphone}" = "monitor" ]; then
-    RECORD_SOURCE="$(pactl get-default-sink).monitor"
-elif [ "${AUDIO_SOURCE_TYPE:-microphone}" = "both" ]; then
-    RECORD_SOURCE=""  # handled separately below
-else
-    RECORD_SOURCE="$(pactl get-default-source)"
+if [ -z "${AUDIO_MICROPHONE_SOURCE:-}" ] \
+    && [ -n "${AUDIO_SOURCE:-}" ] \
+    && [[ "$AUDIO_SOURCE" != *.monitor ]]; then
+    AUDIO_MICROPHONE_SOURCE="$AUDIO_SOURCE"
 fi
+AUDIO_SOURCE_TYPE="both"
+RECORD_SOURCE=""  # mixed below
 
 echo "Recording audio..." >&2
 echo "Output file: $OUTPUT_FILE" >&2
@@ -115,10 +114,9 @@ RECORD_BACKEND="${RECORD_BACKEND:-ffmpeg}"
 set +e
 ffmpeg_exit_code=0
 
-if [ "${AUDIO_SOURCE_TYPE:-microphone}" = "both" ]; then
-    # Mix microphone and sink monitor into a single recording using ffmpeg.
-    # Two inputs: the default source (mic) and the default sink monitor.
-    MIC_SOURCE="$(pactl get-default-source)"
+if [ "$AUDIO_SOURCE_TYPE" = "both" ]; then
+    # Mix the chosen microphone and sink monitor into one recording.
+    MIC_SOURCE="${AUDIO_MICROPHONE_SOURCE:-$(pactl get-default-source)}"
     MONITOR_SOURCE="$(pactl get-default-sink).monitor"
     echo "Mixing mic ($MIC_SOURCE) + monitor ($MONITOR_SOURCE)" >&2
 

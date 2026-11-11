@@ -40,7 +40,7 @@ class RecordingStateTests(TestCase):
 
     def test_recording_command_carries_explicit_audio_signal(self) -> None:
         command = RECORDING.recording_command(
-            "sky", "NFAT Spell Planning", "microphone", "alsa_input.usb-jabra"
+            "sky", "NFAT Spell Planning", "both", "alsa_input.usb-jabra"
         )
         self.assertEqual(command[-2:], ["--audio-source", "alsa_input.usb-jabra"])
         self.assertIn("--audio-source-type", command)
@@ -79,7 +79,7 @@ class RecordingStateTests(TestCase):
 
 
 class AudioInputTests(TestCase):
-    def test_available_inputs_keep_standard_modes_and_add_every_signal(self) -> None:
+    def test_available_inputs_mix_system_audio_with_each_microphone(self) -> None:
         response = SimpleNamespace(
             returncode=0,
             stdout=json.dumps(
@@ -97,16 +97,18 @@ class AudioInputTests(TestCase):
         )
         with patch.object(RECORDING.subprocess, "run", return_value=response):
             inputs = RECORDING.available_audio_inputs()
-        self.assertEqual([item.key for item in inputs[:3]], ["microphone", "monitor", "both"])
-        self.assertEqual(inputs[3].source, "alsa_input.usb-jabra")
-        self.assertEqual(inputs[4].source, "alsa_output.speakers.monitor")
+        self.assertEqual([item.key for item in inputs], ["both", "source:alsa_input.usb-jabra"])
+        self.assertEqual(inputs[1].source, "alsa_input.usb-jabra")
+        self.assertEqual(inputs[1].source_type, "both")
+        self.assertIn("system audio", inputs[1].label)
+        self.assertTrue(all(item.source_type == "both" for item in inputs))
 
     def test_audio_lookup_failure_keeps_microphone_available(self) -> None:
         with patch.object(
             RECORDING.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")
         ):
             inputs = RECORDING.available_audio_inputs()
-        self.assertEqual(inputs[0].label, "Default microphone")
+        self.assertEqual(inputs[0].label, "Default microphone + system audio")
 
 
 class MicrophoneActivityTests(TestCase):
