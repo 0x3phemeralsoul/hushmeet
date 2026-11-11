@@ -27,6 +27,7 @@ Examples:
   hushmeet dsolver --title "V2 rollout" --duration 3600
   hushmeet board --title "August board meeting"
   hushmeet queue
+  hushmeet dismiss path/to/recording.wav
   hushmeet process-queue
   hushmeet process-last
   hushmeet transcribe path/to/audio.wav -m small
@@ -92,6 +93,10 @@ shift
 
 if [[ "$command" == "queue" ]]; then
   exec "$PYTHON" "$ROOT/scripts/hushmeet-queue.py" list
+fi
+
+if [[ "$command" == "dismiss" ]]; then
+  exec "$PYTHON" "$ROOT/scripts/hushmeet-queue.py" dismiss "$@"
 fi
 
 if [[ "$command" == "enqueue-missing" ]]; then
