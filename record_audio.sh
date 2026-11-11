@@ -20,10 +20,10 @@ fi
 OUTPUT_DIR="${RECORDINGS_DIR:-./recordings}"
 DATE=$(date +%Y%m%d)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-# The visible recording name is intentionally minute-granular: it is concise
-# enough for the meeting vault while retaining chronological ordering.
-RECORDING_LABEL=$(LC_ALL=C date +%Y%b%d-%H%M | tr '[:lower:]' '[:upper:]')
+RECORDING_STARTED_EPOCH=$(date +%s)
+RECORDING_LABEL=$(date +%Y-%m-%d:%H)
 OUTPUT_FILE=""
+AUTO_NAMED=false
 
 # Parse arguments
 DURATION=""
@@ -59,21 +59,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Keep a sortable timestamp at the beginning of every generated recording
-# name, followed by the human-recognizable meeting title. Custom --output
-# paths are left untouched.
+# The duration is unknown until the recording ends, so automatically named
+# recordings start in a private temporary directory and are atomically renamed
+# to their final user-facing name afterwards. Custom --output paths are left
+# untouched.
 if [ -z "$OUTPUT_FILE" ]; then
-    TITLE_COMPONENT=$(printf '%s' "$TITLE" \
-        | tr '\n\r' '  ' \
-        | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s#[/\\:*?"<>|]#-#g' \
-        | cut -c1-100)
-    if [ -n "$TITLE_COMPONENT" ]; then
-        MEETING_BASENAME="${RECORDING_LABEL} — ${TITLE_COMPONENT}"
-    else
-        MEETING_BASENAME="${RECORDING_LABEL} — Meeting"
-    fi
-    MEETING_DIR="${OUTPUT_DIR}/${DATE}/${MEETING_BASENAME}"
-    OUTPUT_FILE="${MEETING_DIR}/${MEETING_BASENAME}.wav"
+    AUTO_NAMED=true
+    TEMP_BASENAME=".recording-${TIMESTAMP}"
+    MEETING_DIR="${OUTPUT_DIR}/${DATE}/${TEMP_BASENAME}"
+    OUTPUT_FILE="${MEETING_DIR}/${TEMP_BASENAME}.wav"
 fi
 
 # Create output directory
@@ -160,8 +154,50 @@ fi
 
 set -e
 
+recording_duration_label() {
+    local audio_file="$1"
+    local elapsed_seconds="$2"
+    local duration_seconds=""
+    if command -v ffprobe &> /dev/null; then
+        duration_seconds=$(ffprobe -v error -show_entries format=duration \
+            -of default=noprint_wrappers=1:nokey=1 "$audio_file" 2>/dev/null || true)
+        duration_seconds="${duration_seconds%%.*}"
+    fi
+    if ! [[ "$duration_seconds" =~ ^[0-9]+$ ]]; then
+        duration_seconds="$elapsed_seconds"
+    fi
+    [ "$duration_seconds" -lt 0 ] && duration_seconds=0
+    printf '%02d:%02d' "$((duration_seconds / 3600))" "$(((duration_seconds % 3600) / 60))"
+}
+
+finalize_automatic_name() {
+    local duration_label="$1"
+    local title_component
+    title_component=$(printf '%s' "$TITLE" \
+        | tr '\n\r' '  ' \
+        | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s#[/\\:*?"<>|]#-#g' \
+        | cut -c1-100)
+    local final_basename="${RECORDING_LABEL} - ${duration_label}"
+    if [ -n "$title_component" ]; then
+        final_basename="${final_basename} — ${title_component}"
+    else
+        final_basename="${final_basename} — Meeting"
+    fi
+    local final_dir="${OUTPUT_DIR}/${DATE}/${final_basename}"
+    local suffix=2
+    while [ -e "$final_dir" ]; do
+        final_dir="${OUTPUT_DIR}/${DATE}/${final_basename} (${suffix})"
+        suffix=$((suffix + 1))
+    done
+    mv "$OUTPUT_FILE" "${MEETING_DIR}/${final_basename}.wav"
+    mv "$MEETING_DIR" "$final_dir"
+    OUTPUT_FILE="${final_dir}/${final_basename}.wav"
+}
+
 # Always output filename if file was created, even if interrupted
 if [ -f "$OUTPUT_FILE" ]; then
+    RECORDED_DURATION_LABEL=$(recording_duration_label "$OUTPUT_FILE" "$(( $(date +%s) - RECORDING_STARTED_EPOCH ))")
+
     echo "" >&2
     echo "Recording saved to: $OUTPUT_FILE" >&2
 
@@ -174,6 +210,11 @@ if [ -f "$OUTPUT_FILE" ]; then
         fi
     fi
 
+    if [ "$AUTO_NAMED" = true ]; then
+        finalize_automatic_name "$RECORDED_DURATION_LABEL"
+        echo "Final recording name: $(basename "$OUTPUT_FILE")" >&2
+    fi
+
     # Create metadata file
     meeting_dir=$(dirname "$OUTPUT_FILE")
     base_name=$(basename "$OUTPUT_FILE" .wav)
@@ -184,6 +225,7 @@ if [ -f "$OUTPUT_FILE" ]; then
 {
   "title": "${TITLE}",
   "timestamp": "${TIMESTAMP}",
+  "duration": "${RECORDED_DURATION_LABEL}",
   "date": "${DATE}",
   "audio_file": "$(basename "$OUTPUT_FILE")",
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",

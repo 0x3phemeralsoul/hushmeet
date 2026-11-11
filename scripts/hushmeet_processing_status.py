@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import re
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,6 @@ ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_][0-?]*[ -/]*[@-~])")
 LEGACY_RECORDING_NAME = re.compile(
     r"^(?P<title>.+) — (?P<date>\d{8})_(?P<time>\d{4})\d{2}$"
 )
-MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
 
 def clean_display_text(value: object) -> str:
@@ -29,6 +29,24 @@ def clean_display_text(value: object) -> str:
         if normalized:
             lines.append(normalized)
     return "\n".join(lines)
+
+
+def format_duration(seconds: float) -> str:
+    """Format an elapsed duration to the nearest minute as HH:MM."""
+    minutes = round(max(seconds, 0) / 60)
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def duration_label(audio: Path) -> str | None:
+    """Read a WAV duration from its header without decoding its audio payload."""
+    if audio.suffix.lower() != ".wav":
+        return None
+    try:
+        with wave.open(str(audio), "rb") as recording:
+            seconds = recording.getnframes() / recording.getframerate()
+    except (OSError, EOFError, wave.Error, ZeroDivisionError):
+        return None
+    return format_duration(seconds)
 
 
 def _read_queue() -> dict[str, Any]:
@@ -51,11 +69,15 @@ def _read_queue() -> dict[str, Any]:
 def recording_name(job: dict[str, Any]) -> str:
     audio_file = job.get("audio_file")
     if isinstance(audio_file, str) and audio_file:
-        name = clean_display_text(Path(audio_file).parent.name or Path(audio_file).stem)
+        audio = Path(audio_file)
+        name = clean_display_text(audio.parent.name or audio.stem)
         legacy = LEGACY_RECORDING_NAME.match(name)
         if legacy:
             date = legacy["date"]
-            timestamp = f"{date[:4]}{MONTHS[int(date[4:6]) - 1]}{date[6:]}-{legacy['time']}"
+            timestamp = f"{date[:4]}-{date[4:6]}-{date[6:]}:{legacy['time'][:2]}"
+            duration = duration_label(audio)
+            if duration:
+                timestamp += f" - {duration}"
             return f"{timestamp} — {legacy['title']}"
         return name
     return "Unknown recording"

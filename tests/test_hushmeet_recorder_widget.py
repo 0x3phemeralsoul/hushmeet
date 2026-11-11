@@ -207,8 +207,12 @@ class ProcessingStatusTests(TestCase):
 
         self.assertEqual(
             PROCESSING_STATUS.recording_name(job),
-            "2026NOV09-1607 — NFAT Spell Planning",
+            "2026-11-09:16 — NFAT Spell Planning",
         )
+
+    def test_wav_duration_is_rendered_as_hours_and_minutes(self) -> None:
+        self.assertEqual(PROCESSING_STATUS.duration_label(Path("missing.wav")), None)
+        self.assertEqual(PROCESSING_STATUS.format_duration(3_719), "01:02")
 
 
 class NearbyCalendarTests(TestCase):
