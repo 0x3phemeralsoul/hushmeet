@@ -91,6 +91,38 @@ class CalendarNotificationTests(TestCase):
         )
 
 
+class CalendarPromptTests(TestCase):
+    def test_only_an_in_progress_event_is_eligible_for_a_prompt(self):
+        current = datetime(2026, 11, 11, 14, 0, tzinfo=timezone.utc)
+        active = {
+            "id": "active-event",
+            "summary": "dSolver Refinement",
+            "start": {"dateTime": "2026-11-11T13:55:00Z"},
+            "end": {"dateTime": "2026-11-11T14:30:00Z"},
+        }
+        future = {
+            "id": "future-event",
+            "summary": "Future meeting",
+            "start": {"dateTime": "2026-11-11T14:01:00Z"},
+            "end": {"dateTime": "2026-11-11T15:00:00Z"},
+        }
+        with patch.object(WATCHER, "calendar_events", return_value=[active, future]):
+            events = WATCHER.active_calendar_events({}, current)
+
+        self.assertEqual(events, [active])
+
+    def test_calendar_prompt_identifies_the_event_and_keeps_start_manual(self):
+        event = {"id": "event-id", "summary": "dSolver Refinement"}
+        with patch.object(WATCHER, "send_notification") as notify:
+            WATCHER.prompt_calendar_recording(event)
+
+        self.assertEqual(WATCHER.calendar_event_key(event), "event-id")
+        notify.assert_called_once_with(
+            "HushMeet recording available",
+            "dSolver Refinement is in progress. Open Hushnote Recorder Widget to confirm details and start recording.",
+        )
+
+
 class CalendarAccountBindingTests(TestCase):
     def setUp(self):
         self.temporary_directory = TemporaryDirectory()

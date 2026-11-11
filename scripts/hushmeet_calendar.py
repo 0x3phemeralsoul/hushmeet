@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import site
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,7 @@ from hushmeet_calendar_policy import CALENDAR_SCOPES, verify_authorized_account_
 
 CONFIG_PATH = Path.home() / ".config/hushmeet/watcher.json"
 SCOPES = CALENDAR_SCOPES
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_config() -> dict[str, Any]:
@@ -19,6 +23,35 @@ def load_config() -> dict[str, Any]:
             f"Missing {CONFIG_PATH}. Copy watcher.example.json there and set google_client_secret_file."
         )
     return json.loads(CONFIG_PATH.read_text())
+
+
+def _load_google_clients() -> tuple[Any, Any, Any]:
+    """Import Calendar clients for either the venv worker or GTK system Python."""
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+    except ImportError:
+        venv_roots = [
+            Path(os.environ["HUSHNOTE_VENV"])
+            if os.environ.get("HUSHNOTE_VENV")
+            else ROOT / "venv",
+            ROOT / "venv",
+            ROOT.parent.parent / "venv",
+        ]
+        for venv_root in venv_roots:
+            venv_site_packages = venv_root / "lib" / (
+                f"python{sys.version_info.major}.{sys.version_info.minor}"
+            ) / "site-packages"
+            if venv_site_packages.is_dir():
+                site.addsitedir(str(venv_site_packages))
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+        except ImportError as exc:
+            raise RuntimeError("Missing Google dependencies; install the HushMeet Python dependencies.") from exc
+    return Credentials, Request, build
 
 
 def calendar_events(
@@ -30,12 +63,7 @@ def calendar_events(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Return calendar events in the requested UTC window."""
-    try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request
-        from googleapiclient.discovery import build
-    except ImportError as exc:
-        raise RuntimeError("Missing Google dependencies; run the HushMeet Python installation step.") from exc
+    Credentials, Request, build = _load_google_clients()
 
     token_path = Path(config["google_token_file"]).expanduser()
     if not token_path.exists():
