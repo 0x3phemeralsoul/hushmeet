@@ -29,6 +29,7 @@ Examples:
   hushmeet queue
   hushmeet dismiss path/to/recording.wav
   hushmeet process-queue
+  hushmeet process-one path/to/recording.wav
   hushmeet process-last
   hushmeet transcribe path/to/audio.wav -m small
   hushmeet summarize path/to/transcript.txt -o qwen2.5-coder:14b
@@ -105,6 +106,10 @@ fi
 
 if [[ "$command" == "process-queue" ]]; then
   exec "$PYTHON" "$ROOT/scripts/hushmeet-queue.py" process "$@"
+fi
+
+if [[ "$command" == "process-one" ]]; then
+  exec "$PYTHON" "$ROOT/scripts/hushmeet-queue.py" process-one "$@"
 fi
 
 find_latest_recording() {

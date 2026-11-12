@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import sys
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import gi
@@ -30,6 +32,7 @@ from hushmeet_recording import (
 
 APPLICATION_ID = "io.hushnote.RecorderWidget"
 PROCESSING_STATUS_REFRESH_SECONDS = 60 * 60
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class RecorderWidget(Gtk.Application):
@@ -56,6 +59,10 @@ class RecorderWidget(Gtk.Application):
         self.monitor_key: tuple[int, str] | None = None
         self.microphone_active = False
         self.blink_on = False
+        self.queue_process: subprocess.Popen[object] | None = None
+        self.queue_refresh_button: Gtk.Button | None = None
+        self.queue_process_all_button: Gtk.Button | None = None
+        self.queue_action_status: Gtk.Label | None = None
 
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
@@ -207,6 +214,18 @@ class RecorderWidget(Gtk.Application):
         queue_heading = Gtk.Label(label="Recording processing status", xalign=0)
         queue_heading.get_style_context().add_class("title-4")
         box.pack_start(queue_heading, False, False, 0)
+        queue_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.queue_refresh_button = Gtk.Button.new_with_label("Refresh queue")
+        self.queue_refresh_button.connect("clicked", self.on_refresh_queue)
+        self.queue_process_all_button = Gtk.Button.new_with_label("Process all queued")
+        self.queue_process_all_button.get_style_context().add_class("suggested-action")
+        self.queue_process_all_button.connect("clicked", self.on_process_all_queued)
+        queue_controls.pack_start(self.queue_refresh_button, False, False, 0)
+        queue_controls.pack_start(self.queue_process_all_button, False, False, 0)
+        box.pack_start(queue_controls, False, False, 0)
+        self.queue_action_status = Gtk.Label(xalign=0)
+        self.queue_action_status.set_line_wrap(True)
+        box.pack_start(self.queue_action_status, False, False, 0)
         queue_scroller = Gtk.ScrolledWindow()
         queue_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         queue_scroller.set_min_content_height(210)
@@ -269,7 +288,7 @@ class RecorderWidget(Gtk.Application):
         row.add(label)
         self.queue_list.add(row)
 
-    def _add_queue_job(self, job: dict[str, Any]) -> None:
+    def _add_queue_job(self, job: dict[str, Any], *, allow_process: bool = False) -> None:
         assert self.queue_list
         details = Gtk.Label(xalign=0)
         details.set_line_wrap(True)
@@ -277,9 +296,18 @@ class RecorderWidget(Gtk.Application):
             f"<b>{GLib.markup_escape_text(recording_name(job))}</b>\n"
             f"{GLib.markup_escape_text(job_detail(job))}"
         )
+        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        content.pack_start(details, True, True, 0)
+        if allow_process:
+            audio_file = job.get("audio_file")
+            if isinstance(audio_file, str) and audio_file:
+                process_button = Gtk.Button.new_with_label("Process")
+                process_button.set_sensitive(self.queue_process is None)
+                process_button.connect("clicked", self.on_process_one_queued, audio_file)
+                content.pack_end(process_button, False, False, 0)
         row = Gtk.ListBoxRow()
         row.set_selectable(False)
-        row.add(details)
+        row.add(content)
         self.queue_list.add(row)
 
     def refresh_processing_status(self) -> bool:
@@ -291,7 +319,7 @@ class RecorderWidget(Gtk.Application):
         self._add_queue_heading(f"To be processed ({len(unfinished)})")
         if unfinished:
             for job in unfinished:
-                self._add_queue_job(job)
+                self._add_queue_job(job, allow_process=job.get("status") in {"pending", "failed"})
         else:
             self._add_queue_job({"audio_file": "No recordings waiting", "status": "up to date"})
         self._add_queue_heading("Last 10 processed")
@@ -300,8 +328,54 @@ class RecorderWidget(Gtk.Application):
                 self._add_queue_job(job)
         else:
             self._add_queue_job({"audio_file": "No processed recordings yet", "status": ""})
+        if self.queue_refresh_button:
+            self.queue_refresh_button.set_sensitive(self.queue_process is None)
+        if self.queue_process_all_button:
+            self.queue_process_all_button.set_sensitive(bool(unfinished) and self.queue_process is None)
         self.queue_list.show_all()
         return True
+
+    def on_refresh_queue(self, *_: object) -> None:
+        self.refresh_processing_status()
+        if self.queue_action_status and not self.queue_process:
+            self.queue_action_status.set_text("Queue refreshed.")
+
+    def _start_queue_processing(self, arguments: list[str], description: str) -> None:
+        if self.queue_process and self.queue_process.poll() is None:
+            return
+        try:
+            self.queue_process = subprocess.Popen(
+                [str(ROOT / "scripts/hushmeet"), *arguments],
+                cwd=ROOT,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            if self.queue_action_status:
+                self.queue_action_status.set_text(f"Could not start queue processing: {exc}")
+            return
+        if self.queue_action_status:
+            self.queue_action_status.set_text(f"{description}…")
+        self.refresh_processing_status()
+        GLib.timeout_add(500, self._refresh_after_queue_process)
+
+    def _refresh_after_queue_process(self) -> bool:
+        if self.queue_process and self.queue_process.poll() is None:
+            return True
+        returncode = self.queue_process.returncode if self.queue_process else 0
+        self.queue_process = None
+        self.refresh_processing_status()
+        if self.queue_action_status:
+            message = "Queue processing finished." if returncode == 0 else "Queue processing finished with failures; review the item details."
+            self.queue_action_status.set_text(message)
+        return False
+
+    def on_process_all_queued(self, *_: object) -> None:
+        self._start_queue_processing(["process-queue"], "Processing all queued recordings")
+
+    def on_process_one_queued(self, _button: Gtk.Button, audio_file: str) -> None:
+        self._start_queue_processing(["process-one", audio_file], f"Processing {Path(audio_file).parent.name}")
 
     def _render_window_state(self, state: dict[str, Any] | None) -> None:
         if not self.status_label or not self.start_button:

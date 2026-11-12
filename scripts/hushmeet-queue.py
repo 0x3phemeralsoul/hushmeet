@@ -356,6 +356,51 @@ def process_queue(limit: int | None) -> int:
     return 1 if failures else 0
 
 
+def process_one(audio_file: str) -> int:
+    """Process exactly one pending or failed item selected by the recorder UI."""
+    try:
+        normalized = normalize_audio_file(audio_file)
+    except FileNotFoundError as exc:
+        print(f"missing {audio_file}: {exc}", file=sys.stderr)
+        return 1
+
+    def claim() -> dict | None:
+        data = load_queue()
+        for job in data["jobs"]:
+            if job.get("audio_file") != normalized:
+                continue
+            if job.get("status") not in {"pending", "failed"}:
+                return None
+            job.update(
+                status="running",
+                attempts=int(job.get("attempts", 0)) + 1,
+                started_at=now(),
+                last_error="",
+                updated_at=now(),
+            )
+            save_queue(data)
+            return dict(job)
+        return None
+
+    job = with_lock(claim)
+    if not job:
+        print(f"not processable {normalized}", file=sys.stderr)
+        return 1
+    try:
+        process_job(job)
+    except QueueBlocked as exc:
+        update_job(normalized, status="failed", last_error=str(exc), failed_at=now())
+        print(f"blocked {normalized}: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        update_job(normalized, status="failed", last_error=str(exc), failed_at=now())
+        print(f"failed {normalized}: {exc}", file=sys.stderr)
+        return 1
+    update_job(normalized, status="succeeded", finished_at=now(), last_error="")
+    print(f"processed {normalized}")
+    return 0
+
+
 def list_queue() -> int:
     data = with_lock(load_queue)
     for job in data["jobs"]:
@@ -404,6 +449,9 @@ def main() -> int:
     process = sub.add_parser("process")
     process.add_argument("--limit", type=int)
 
+    process_one_parser = sub.add_parser("process-one")
+    process_one_parser.add_argument("audio_file")
+
     dismiss = sub.add_parser("dismiss")
     dismiss.add_argument("audio_file")
 
@@ -421,6 +469,8 @@ def main() -> int:
         return 0
     if args.command == "process":
         return process_queue(args.limit)
+    if args.command == "process-one":
+        return process_one(args.audio_file)
     if args.command == "dismiss":
         dismissed = dismiss_job(Path(args.audio_file))
         print("dismissed" if dismissed else "not queued")
