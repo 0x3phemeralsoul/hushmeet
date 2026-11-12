@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = Path.home() / ".local/state/hushmeet/active.json"
+RECORDER_LOG_PATH = Path.home() / ".local/state/hushmeet/recorder.log"
+LAUNCH_CHECK_SECONDS = 0.75
 CATEGORIES = [
     ("sky", "SKY"),
     ("dsolver", "dSolver"),
@@ -94,6 +97,16 @@ def write_active_recording(data: dict[str, Any]) -> None:
     temp_path.replace(STATE_PATH)
 
 
+def _launch_error(log_path: Path, returncode: int) -> RuntimeError:
+    """Give the recorder form a useful startup failure, not a false REC state."""
+    try:
+        lines = [line.strip() for line in log_path.read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        lines = []
+    detail = lines[-1] if lines else "No diagnostic was emitted."
+    return RuntimeError(f"Recorder exited immediately (status {returncode}): {detail}")
+
+
 def recording_command(
     category: str,
     title: str,
@@ -133,10 +146,22 @@ def start_recording(
     if category not in {value for value, _ in CATEGORIES}:
         raise ValueError("Choose a valid HushMeet category.")
 
-    process = subprocess.Popen(
-        recording_command(category, normalized_title, audio_source_type, audio_source),
-        start_new_session=True,
-    )
+    RECORDER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with RECORDER_LOG_PATH.open("a", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            recording_command(category, normalized_title, audio_source_type, audio_source),
+            start_new_session=True,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    # The wrapper must remain alive while capture runs.  Without this check a
+    # missing source or ffmpeg failure briefly creates a false active state,
+    # then silently returns the widget to idle on its next refresh.
+    time.sleep(LAUNCH_CHECK_SECONDS)
+    poll = getattr(process, "poll", None)
+    returncode = poll() if callable(poll) else None
+    if returncode is not None:
+        raise _launch_error(RECORDER_LOG_PATH, returncode)
     data: dict[str, Any] = {
         "pid": process.pid,
         "title": normalized_title,
@@ -147,6 +172,7 @@ def start_recording(
         "audio_source": audio_source,
         "audio_label": audio_label or "Default microphone + system audio",
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "log_path": str(RECORDER_LOG_PATH),
     }
     if meet_url:
         data["meet_url"] = meet_url.rstrip("/")

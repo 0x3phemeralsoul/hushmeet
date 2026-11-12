@@ -26,10 +26,14 @@ class RecordingStateTests(TestCase):
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
         self.state_path = Path(self.temporary_directory.name) / "active.json"
+        self.log_path = Path(self.temporary_directory.name) / "recorder.log"
         self.state_patch = patch.object(RECORDING, "STATE_PATH", self.state_path)
+        self.log_patch = patch.object(RECORDING, "RECORDER_LOG_PATH", self.log_path)
         self.state_patch.start()
+        self.log_patch.start()
 
     def tearDown(self) -> None:
+        self.log_patch.stop()
         self.state_patch.stop()
         self.temporary_directory.cleanup()
 
@@ -53,7 +57,9 @@ class RecordingStateTests(TestCase):
 
     def test_start_persists_complete_widget_state(self) -> None:
         process = SimpleNamespace(pid=12345)
-        with patch.object(RECORDING.subprocess, "Popen", return_value=process) as popen:
+        with patch.object(RECORDING.subprocess, "Popen", return_value=process) as popen, patch.object(
+            RECORDING.time, "sleep"
+        ):
             state = RECORDING.start_recording(
                 "sky",
                 "NFAT Spell Planning",
@@ -67,6 +73,16 @@ class RecordingStateTests(TestCase):
         self.assertIn("started_at", state)
         self.assertEqual(json.loads(self.state_path.read_text())["title"], "NFAT Spell Planning")
         popen.assert_called_once()
+
+    def test_immediate_recorder_exit_does_not_publish_active_state(self) -> None:
+        self.log_path.write_text("ffmpeg: No such process\n")
+        process = SimpleNamespace(pid=12345, poll=lambda: 1)
+        with patch.object(RECORDING.subprocess, "Popen", return_value=process), patch.object(
+            RECORDING.time, "sleep"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg: No such process"):
+                RECORDING.start_recording("sky", "Meeting", "Recorder widget")
+        self.assertFalse(self.state_path.exists())
 
     def test_stop_signals_group_and_clears_state(self) -> None:
         RECORDING.write_active_recording({"pid": 12345, "title": "Meeting"})
