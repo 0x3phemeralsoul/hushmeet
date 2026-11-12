@@ -41,3 +41,17 @@ class QueueDismissalTests(TestCase):
         self.assertFalse(QUEUE.upsert_job(self.audio, "sky"))
         self.assertEqual(QUEUE.pending_jobs(), [])
         self.assertEqual(QUEUE.load_queue()["jobs"][0]["status"], "ignored")
+
+    def test_processing_one_selected_job_leaves_other_jobs_queued(self) -> None:
+        other_audio = self.directory / "other.wav"
+        other_audio.touch()
+        self.assertTrue(QUEUE.upsert_job(self.audio, "sky"))
+        self.assertTrue(QUEUE.upsert_job(other_audio, "dsolver"))
+
+        with patch.object(QUEUE, "process_job") as process_job:
+            self.assertEqual(QUEUE.process_one(str(self.audio)), 0)
+
+        process_job.assert_called_once()
+        jobs = QUEUE.load_queue()["jobs"]
+        self.assertEqual(jobs[0]["status"], "succeeded")
+        self.assertEqual(jobs[1]["status"], "pending")
