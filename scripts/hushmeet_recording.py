@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = Path.home() / ".local/state/hushmeet/active.json"
 RECORDER_LOG_PATH = Path.home() / ".local/state/hushmeet/recorder.log"
 LAUNCH_CHECK_SECONDS = 0.75
+QUEUE_AFTER_STOP_DELAY_SECONDS = 5
 CATEGORIES = [
     ("sky", "SKY"),
     ("dsolver", "dSolver"),
@@ -181,13 +183,31 @@ def start_recording(
 
 
 def stop_recording() -> bool:
-    """Signal the recorder process group and remove its active state."""
+    """Stop capture and seed the finished recording into the processing queue."""
     data = active_recording()
     if not data:
         return False
     try:
         os.killpg(int(data["pid"]), signal.SIGINT)
     except ProcessLookupError:
+        pass
+    # The capture wrapper receives the same SIGINT as ffmpeg and therefore
+    # cannot reliably enqueue after the process-group stop.  Seed after the
+    # recorder has finalized its file instead; upsert_job keeps this idempotent.
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "scripts/hushmeet-queue.py"),
+                "seed-after-delay",
+                "--seconds",
+                str(QUEUE_AFTER_STOP_DELAY_SECONDS),
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
         pass
     _remove_state()
     return True
@@ -206,9 +226,6 @@ def _source_description(source: dict[str, Any]) -> str:
 
 def available_audio_inputs() -> list[AudioInput]:
     """Return system-audio mixes using the default or each selectable microphone."""
-    inputs = [
-        AudioInput("both", "Default microphone + system audio", "both"),
-    ]
     result = subprocess.run(
         ["pactl", "--format=json", "list", "sources"],
         text=True,
@@ -216,15 +233,16 @@ def available_audio_inputs() -> list[AudioInput]:
         check=False,
     )
     if result.returncode != 0:
-        return inputs
+        return [AudioInput("unavailable", "No physical microphone detected", "both")]
     try:
         sources = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return inputs
+        return [AudioInput("unavailable", "No physical microphone detected", "both")]
     if isinstance(sources, dict):
         sources = sources.get("sources", [])
     if not isinstance(sources, list):
-        return inputs
+        return [AudioInput("unavailable", "No physical microphone detected", "both")]
+    microphones: list[AudioInput] = []
     for source in sources:
         if not isinstance(source, dict) or not source.get("name"):
             continue
@@ -232,7 +250,7 @@ def available_audio_inputs() -> list[AudioInput]:
         if source_name.endswith(".monitor"):
             continue
         description = _source_description(source)
-        inputs.append(
+        microphones.append(
             AudioInput(
                 key=f"source:{source_name}",
                 label=f"{description} + system audio ({source_name})",
@@ -240,4 +258,15 @@ def available_audio_inputs() -> list[AudioInput]:
                 source=source_name,
             )
         )
-    return inputs
+    if not microphones:
+        return [
+            AudioInput(
+                "unavailable",
+                "No physical microphone detected — connect or enable one first",
+                "both",
+            )
+        ]
+    return [
+        AudioInput("both", "Default microphone + system audio", "both", microphones[0].source),
+        *microphones,
+    ]

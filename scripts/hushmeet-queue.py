@@ -452,6 +452,9 @@ def main() -> int:
     process_one_parser = sub.add_parser("process-one")
     process_one_parser.add_argument("audio_file")
 
+    seed_after_delay = sub.add_parser("seed-after-delay")
+    seed_after_delay.add_argument("--seconds", type=float, default=5)
+
     dismiss = sub.add_parser("dismiss")
     dismiss.add_argument("audio_file")
 
@@ -471,6 +474,11 @@ def main() -> int:
         return process_queue(args.limit)
     if args.command == "process-one":
         return process_one(args.audio_file)
+    if args.command == "seed-after-delay":
+        time.sleep(max(args.seconds, 0))
+        added = seed_missing()
+        print(f"queued {added} finished meeting(s)")
+        return 0
     if args.command == "dismiss":
         dismissed = dismiss_job(Path(args.audio_file))
         print("dismissed" if dismissed else "not queued")

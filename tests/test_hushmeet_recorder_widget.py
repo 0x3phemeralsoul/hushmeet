@@ -88,9 +88,10 @@ class RecordingStateTests(TestCase):
         RECORDING.write_active_recording({"pid": 12345, "title": "Meeting"})
         with patch.object(RECORDING, "_process_group_is_alive", return_value=True), patch.object(
             RECORDING.os, "killpg"
-        ) as kill_group:
+        ) as kill_group, patch.object(RECORDING.subprocess, "Popen") as queue_seed:
             self.assertTrue(RECORDING.stop_recording())
         kill_group.assert_called_once()
+        self.assertIn("seed-after-delay", queue_seed.call_args.args[0])
         self.assertFalse(self.state_path.exists())
 
 
@@ -119,12 +120,23 @@ class AudioInputTests(TestCase):
         self.assertIn("system audio", inputs[1].label)
         self.assertTrue(all(item.source_type == "both" for item in inputs))
 
-    def test_audio_lookup_failure_keeps_microphone_available(self) -> None:
+    def test_no_physical_source_blocks_the_default_recording_choice(self) -> None:
+        response = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([{"name": "auto_null.monitor", "description": "Dummy Output Monitor"}]),
+        )
+        with patch.object(RECORDING.subprocess, "run", return_value=response):
+            inputs = RECORDING.available_audio_inputs()
+        self.assertEqual(inputs[0].key, "unavailable")
+        self.assertIn("No physical microphone", inputs[0].label)
+
+    def test_audio_lookup_failure_blocks_silent_default_recording(self) -> None:
         with patch.object(
             RECORDING.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="")
         ):
             inputs = RECORDING.available_audio_inputs()
-        self.assertEqual(inputs[0].label, "Default microphone + system audio")
+        self.assertEqual(inputs[0].key, "unavailable")
+        self.assertIn("No physical microphone", inputs[0].label)
 
 
 class MicrophoneActivityTests(TestCase):
