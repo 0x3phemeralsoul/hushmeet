@@ -7,8 +7,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Load config file if it exists
-CONFIG_FILE="${SCRIPT_DIR}/.hushnoterc"
+# A recorder widget or a linked worktree can share the main checkout's venv.
+# Resolve it before the config so that checkout-local settings remain usable.
+VENV_ROOT="${HUSHNOTE_VENV:-${SCRIPT_DIR}/venv}"
+if [ ! -x "${VENV_ROOT}/bin/python3" ] && [ -x "${SCRIPT_DIR}/../../venv/bin/python3" ]; then
+    VENV_ROOT="$(cd "${SCRIPT_DIR}/../../venv" && pwd)"
+fi
+PYTHON="${VENV_ROOT}/bin/python3"
+
+if [ -n "${HUSHNOTE_CONFIG:-}" ]; then
+    CONFIG_FILE="$HUSHNOTE_CONFIG"
+elif [ -f "${SCRIPT_DIR}/.hushnoterc" ]; then
+    CONFIG_FILE="${SCRIPT_DIR}/.hushnoterc"
+else
+    CONFIG_FILE="$(dirname "$VENV_ROOT")/.hushnoterc"
+fi
 if [ -f "$CONFIG_FILE" ]; then
     # Source the config file
     set -a  # Export all variables
@@ -26,7 +39,6 @@ TRIM_NOISE_DB="${TRIM_NOISE_DB:--35}"       # dB threshold for silence detection
 TRIM_MIN_SILENCE="${TRIM_MIN_SILENCE:-60}"  # Minimum silence duration in seconds (default: 60)
 POST_SUMMARY_HOOK="${POST_SUMMARY_HOOK:-}"  # Script to run after summary is created; receives summary path as $1
 DEBUG="${DEBUG:-false}"
-PYTHON="${SCRIPT_DIR}/venv/bin/python3"
 
 # Colors for output
 RED='\033[0;31m'
@@ -75,6 +87,8 @@ Options:
 
 Environment Variables:
     RECORDINGS_DIR      Directory for recordings (default: ./recordings)
+    HUSHNOTE_VENV       Shared virtual environment used by HushNote scripts
+    HUSHNOTE_CONFIG     Explicit path to the HushNote configuration file
     WHISPER_MODEL       Default Whisper model (default: base)
     OLLAMA_MODEL        Default Ollama model (default: llama3.1:8b)
     OLLAMA_URL          Ollama API URL (default: http://localhost:11434)
