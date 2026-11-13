@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MEETINGS_ROOT = Path("/home/ephy/dev/Dewiz/Meetings")
 QUEUE_PATH = Path.home() / ".local/state/hushmeet/process-queue.json"
 LOCK_PATH = Path.home() / ".local/state/hushmeet/process-queue.lock"
+OPENAI_ENV_PATH = Path.home() / ".config/hushmeet/openai.env"
 CATEGORY_DIRS = {
     "sky": MEETINGS_ROOT / "SKY",
     "dsolver": MEETINGS_ROOT / "dSolver",
@@ -230,10 +232,36 @@ def pending_jobs() -> list[dict]:
     return with_lock(read)
 
 
-def summarize(transcript: Path, category: str) -> Path:
+def summary_environment(category: str) -> dict[str, str]:
+    """Use the same OpenAI credential for desktop and nightly queue runs.
+
+    The nightly systemd service loads this environment file itself. The widget
+    runs without that service environment, so read only the key as data rather
+    than executing the file as a shell script. An inherited key takes priority.
+    """
     env = os.environ.copy()
     env["HUSHNOTE_CATEGORY"] = category
     env["HUSHNOTE_TRANSCRIBE_FORMAT"] = "md"
+    if env.get("OPENAI_API_KEY"):
+        return env
+    try:
+        for line in OPENAI_ENV_PATH.read_text(encoding="utf-8").splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name.strip() == "OPENAI_API_KEY":
+                try:
+                    values = shlex.split(value, comments=True, posix=True)
+                except ValueError:
+                    return env
+                if len(values) == 1 and values[0]:
+                    env["OPENAI_API_KEY"] = values[0]
+                break
+    except (OSError, UnicodeDecodeError):
+        pass
+    return env
+
+
+def summarize(transcript: Path, category: str) -> Path:
+    env = summary_environment(category)
     run_checked([str(ROOT / "hushnote"), "summarize", str(transcript)], env=env)
     summary = transcript.with_name(f"{transcript.stem.removesuffix('_trimmed')}_summary.md")
     if not summary.exists():

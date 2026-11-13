@@ -6,6 +6,7 @@ VENV_ROOT="${HUSHNOTE_VENV:-$ROOT/venv}"
 if [ ! -x "$VENV_ROOT/bin/python3" ] && [ -x "$ROOT/../../venv/bin/python3" ]; then
   VENV_ROOT="$(cd "$ROOT/../../venv" && pwd)"
 fi
+export HUSHNOTE_VENV="$VENV_ROOT"
 PYTHON="$VENV_ROOT/bin/python3"
 MEETINGS_ROOT="/home/ephy/dev/Dewiz/Meetings"
 declare -A CATEGORY_DIRS=(

@@ -70,6 +70,12 @@ cp .hushnoterc.example .hushnoterc
 
 `.hushnoterc` is sourced at startup and ignored by git. The example file documents every available option with defaults and comments, including audio backend, Whisper model, Ollama model, silent tail trimming thresholds, and the post-summary hook.
 
+Linked checkouts can share a virtual environment using `HUSHNOTE_VENV`. HushNote
+uses a checkout-local `.hushnoterc` when present, otherwise it looks beside the
+shared virtual environment. Set `HUSHNOTE_CONFIG` to select a specific config.
+The HushMeet queue uses the existing `~/.config/hushmeet/openai.env` key for
+desktop processing when `OPENAI_API_KEY` was not inherited from the session.
+
 ### Whisper Models
 
 | Model | Size | Speed | Use Case |
