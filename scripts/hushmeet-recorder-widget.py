@@ -442,6 +442,11 @@ class RecorderWidget(Gtk.Application):
         if not audio:
             self.status_label.set_text("Choose an input signal before starting recording.")
             return
+        if audio.key == "unavailable" or not audio.source:
+            self.status_label.set_text(
+                "No physical microphone is available. Connect or enable a microphone, then reopen the recorder."
+            )
+            return
         try:
             start_recording(
                 category,

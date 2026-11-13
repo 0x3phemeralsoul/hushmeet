@@ -77,6 +77,7 @@ if [[ "$1" == "sky" || "$1" == "dsolver" || "$1" == "dewiz" || "$1" == "board" ]
     esac
   done
   export AUDIO_SOURCE_TYPE="both"
+  export RECORDINGS_DIR="${CATEGORY_DIRS[$HUSHNOTE_CATEGORY]}"
   unset AUDIO_SOURCE
   if [[ -n "$audio_source" && "$audio_source" != *.monitor ]]; then
     export AUDIO_MICROPHONE_SOURCE="$audio_source"
